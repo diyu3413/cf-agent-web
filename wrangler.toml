@@ -1,0 +1,41 @@
+# ---- Cloudflare Workers 部署配置 ----
+# 免费版可跑：D1 / R2 / Durable Objects(SQLite) 都在免费额度内。
+# 用法：
+#   1. wrangler d1 create agent-web        → 把输出的 database_id 填到下面
+#   2. wrangler r2 bucket create agent-workspace
+#   3. wrangler d1 migrations apply DB --remote
+#   4. wrangler secret put admin_password
+#   5. wrangler deploy
+
+name = "cf-agent-web"
+main = "src/index.js"
+compatibility_date = "2026-07-01"
+
+# D1 只存索引/元数据/会话列表（免费版每天 10 万行读写，2026-09 起严格限额），
+# 文件正文一律进 R2，会话消息进 DO 自带 SQLite，不给 D1 添负担。
+[[d1_databases]]
+binding = "DB"
+database_name = "agent-web"
+database_id = "在这里填你创建的 D1 数据库 ID"
+
+# R2 是工作区本体：免费 10GB 存储、每月 100 万次写 / 1000 万次读，个人规模用不完。
+[[r2_buckets]]
+binding = "WORKSPACE"
+bucket_name = "agent-workspace"
+
+# 每个会话一个 DO 实例：消息历史存它自带的 SQLite，工具循环、WebSocket、
+# 定时任务（alarm）都在里面。免费版要求 DO 必须是 SQLite 类。
+[[durable_objects.bindings]]
+name = "SESSIONS"
+class_name = "AgentSession"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["AgentSession"]
+
+[observability]
+enabled = true
+
+[vars]
+# 管理员密码建议改用 secret：wrangler secret put admin_password
+# admin_password = "改成你自己的密码"

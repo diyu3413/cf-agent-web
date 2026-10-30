@@ -1,0 +1,25 @@
+{
+  "name": "cf-agent-web",
+  "version": "0.1.0",
+  "description": "跑在 Cloudflare Worker 上的 web 端文件工作区 agent：R2 当工作区、D1 存索引、模型走 OpenAI 兼容网关",
+  "type": "module",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "migrate:local": "wrangler d1 migrations apply DB --local",
+    "migrate:remote": "wrangler d1 migrations apply DB --remote",
+    "test": "node test/unit.mjs && node test/md-web.mjs && node test/agent.mjs && node test/ui.mjs"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "allowScripts": {
+    "workerd@1.20261023.1": true,
+    "esbuild@0.28.2": true
+  }
+}
