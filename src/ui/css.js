@@ -24,19 +24,21 @@ body{
   overflow-wrap:anywhere;
   transition:background-color var(--dur-m) var(--ease-std),color var(--dur-m) var(--ease-std);
 }
-body.nav-open{overflow:hidden}
+body.nav-open,body.dialog-open{overflow:hidden}
 :focus-visible{outline:3px solid var(--md-sys-color-primary);outline-offset:2px;border-radius:var(--md-shape-xs)}
 svg.i{width:22px;height:22px;display:block;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;flex:0 0 auto}
 svg.i.sm{width:18px;height:18px;stroke-width:2}
 
 /* ---------- 动效关键帧 ---------- */
-@keyframes fadeUp{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
+@keyframes fadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
 @keyframes fadeIn{from{opacity:0}to{opacity:1}}
-@keyframes dlgIn{from{opacity:0;transform:translateY(28px) scale(.94)}to{opacity:1;transform:none}}
+@keyframes fadeOut{to{opacity:0}}
+@keyframes dlgIn{from{opacity:0;transform:translateY(8px) scale(.98)}to{opacity:1;transform:none}}
+@keyframes dlgOut{to{opacity:0;transform:translateY(4px) scale(.98)}}
 @keyframes spin{to{transform:rotate(360deg)}}
 @keyframes popIn{from{opacity:0;transform:scale(.9)}to{opacity:1;transform:none}}
 @media (prefers-reduced-motion:reduce){
-  *,*::before,*::after{animation-duration:.001ms!important;animation-iteration-count:1!important;transition-duration:.001ms!important;scroll-behavior:auto!important}
+  *,*::before,*::after{animation-duration:.001ms!important;animation-delay:0ms!important;animation-iteration-count:1!important;transition-duration:.001ms!important;transition-delay:0ms!important;scroll-behavior:auto!important}
 }
 
 /* ---------- 排版 M3 type scale ---------- */
@@ -94,6 +96,7 @@ svg.i.sm{width:18px;height:18px;stroke-width:2}
   transition:opacity var(--dur-s) var(--ease-std);
 }
 .navitem:hover .pill::after{opacity:var(--md-state-hover)}
+.navitem:focus-visible .pill::after{opacity:var(--md-state-press)}
 .navitem:active .pill::after{opacity:var(--md-state-press)}
 .navitem[aria-selected=true] .pill{background:var(--md-sys-color-secondary-container);color:var(--md-sys-color-on-secondary-container)}
 .navitem[aria-selected=true]{color:var(--md-sys-color-on-surface)}
@@ -107,7 +110,8 @@ svg.i.sm{width:18px;height:18px;stroke-width:2}
 
 main{flex:1;min-width:0;padding:8px 24px 96px}
 .wrap{max-width:1080px;margin:0 auto}
-#pane.enter{animation:fadeUp var(--dur-m) var(--ease-emph-out) both}
+/* pane 不变换坐标系；抽屉仍留在未变换的 shell 中。 */
+#pane.enter{animation:fadeIn var(--dur-m) var(--ease-emph-out)}
 .head{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap;margin:16px 0 4px}
 .head h2{margin:0}
 .head .spacer{flex:1}
@@ -140,14 +144,15 @@ button.btn{
   min-height:40px;padding:0 24px;border-radius:var(--md-shape-full);display:inline-flex;align-items:center;justify-content:center;gap:8px;
   background:var(--md-sys-color-primary);color:var(--md-sys-color-on-primary);
   position:relative;overflow:hidden;
-  transition:box-shadow var(--dur-m) var(--ease-std),transform 90ms var(--ease-std),background-color var(--dur-m) var(--ease-std);
+  transition:box-shadow var(--dur-m) var(--ease-std),transform var(--dur-s) var(--ease-std),background-color var(--dur-m) var(--ease-std);
 }
 button.btn::after,button.icon::after,a.btn::after{
   content:"";position:absolute;inset:0;background:currentColor;opacity:0;pointer-events:none;
   transition:opacity var(--dur-s) var(--ease-std);
 }
-button.btn:hover::after,button.icon:hover::after{opacity:var(--md-state-hover)}
-button.btn:active::after,button.icon:active::after{opacity:var(--md-state-press)}
+button.btn:hover::after,button.icon:hover::after,a.btn:hover::after{opacity:var(--md-state-hover)}
+button.btn:focus-visible::after,button.icon:focus-visible::after,a.btn:focus-visible::after{opacity:var(--md-state-press)}
+button.btn:active::after,button.icon:active::after,a.btn:active::after{opacity:var(--md-state-press)}
 button.btn:hover{box-shadow:var(--md-elev-1)}
 button.btn:active{transform:scale(.97)}
 button.btn:disabled{opacity:.38;cursor:not-allowed;box-shadow:none;transform:none}
@@ -163,14 +168,15 @@ a.btn{
   display:inline-flex;align-items:center;justify-content:center;gap:8px;position:relative;overflow:hidden;
   background:var(--md-sys-color-primary);color:var(--md-sys-color-on-primary);
 }
+a.btn.outlined{background:transparent;color:var(--md-sys-color-primary);border:1px solid var(--md-sys-color-outline)}
 button.icon{
   border:0;background:transparent;color:var(--md-sys-color-on-surface-variant);cursor:pointer;
   width:40px;height:40px;min-width:40px;border-radius:var(--md-shape-full);display:grid;place-items:center;
   position:relative;overflow:hidden;
-  transition:background-color var(--dur-m) var(--ease-std),transform 90ms var(--ease-std),color var(--dur-m) var(--ease-std);
+  transition:background-color var(--dur-m) var(--ease-std),transform var(--dur-s) var(--ease-std),color var(--dur-m) var(--ease-std);
 }
 button.icon:active{transform:scale(.92)}
-button.icon:disabled{opacity:.38;cursor:not-allowed}
+button.icon:disabled{opacity:.38;cursor:not-allowed;transform:none}
 button.icon:disabled::after{opacity:0}
 button.icon.spinning svg{animation:spin 900ms linear infinite;transform-origin:50% 50%}
 
@@ -187,6 +193,7 @@ button.icon.spinning svg{animation:spin 900ms linear infinite;transform-origin:5
   border-radius:var(--md-shape-xs) var(--md-shape-xs) 0 0;padding:12px 16px;min-height:48px;
   transition:border-color var(--dur-s) var(--ease-std),background-color var(--dur-m) var(--ease-std);
 }
+.field input:hover,.field select:hover,.field textarea:hover{border-color:var(--md-sys-color-on-surface)}
 .field textarea{min-height:96px;resize:vertical;font-family:"Roboto Mono",ui-monospace,monospace;font-size:13px}
 .field input:focus,.field select:focus,.field textarea:focus{
   outline:none;border-bottom:2px solid var(--md-sys-color-primary);padding-bottom:11px;
@@ -199,6 +206,7 @@ button.icon.spinning svg{animation:spin 900ms linear infinite;transform-origin:5
   background:var(--md-sys-color-surface-container-highest);
   padding:12px 20px;
 }
+.field.round input:hover{border-color:var(--md-sys-color-on-surface)}
 .field.round input:focus{
   border:2px solid var(--md-sys-color-primary);
   border-radius:var(--md-shape-full);
@@ -287,10 +295,19 @@ dialog{
   background:var(--md-sys-color-surface-container-high);color:var(--md-sys-color-on-surface);
   box-shadow:var(--md-elev-3);
 }
-dialog[open]{animation:dlgIn var(--dur-l) var(--ease-emph-out) both}
-dialog::backdrop{background:var(--md-sys-color-scrim);animation:fadeIn var(--dur-m) var(--ease-std) both}
-dialog h3{margin:0 0 8px}
+dialog[open]{animation:dlgIn var(--dur-m) var(--ease-emph-out)}
+dialog.leaving{animation:dlgOut var(--dur-s) var(--ease-std) forwards}
+dialog::backdrop{background:var(--md-sys-color-scrim);animation:fadeIn var(--dur-m) var(--ease-std)}
+dialog.leaving::backdrop{animation:fadeOut var(--dur-s) var(--ease-std) forwards}
+.dialog-head{display:flex;align-items:flex-start;gap:16px;margin-bottom:16px}
+dialog .dialog-head h3{flex:1;min-width:0;margin:4px 0 0}
+.dialog-head .dialog-close{flex:0 0 40px;margin:-4px -4px 0 0}
+.dialog-body p{margin:0 0 16px}
 dialog .actions{display:flex;justify-content:flex-end;gap:8px;margin-top:24px;flex-wrap:wrap}
+.dialog-status{display:flex;align-items:center;gap:12px;padding:12px 16px;margin-top:16px;border-radius:var(--md-shape-s);background:var(--md-sys-color-inverse-surface);color:var(--md-sys-color-inverse-on-surface)}
+.dialog-status .snack-text{flex:1;min-width:0}
+.dialog-status button.icon{color:inherit}
+.file-editor{min-height:40vh!important}
 .scroll{max-height:46vh;overflow:auto;margin:8px -4px;padding:0 4px}
 
 /* ---------- 提示条 ---------- */
@@ -299,13 +316,17 @@ dialog .actions{display:flex;justify-content:flex-end;gap:8px;margin-top:24px;fl
 #snack{
   position:fixed;left:50%;bottom:calc(24px + env(safe-area-inset-bottom,0px));
   transform:translate(-50%,16px);
-  opacity:0;visibility:hidden;pointer-events:none;
+  opacity:0;visibility:hidden;pointer-events:auto;
+  display:flex;align-items:center;gap:12px;
   background:var(--md-sys-color-inverse-surface);color:var(--md-sys-color-inverse-on-surface);
   padding:14px 16px;border-radius:var(--md-shape-s);box-shadow:var(--md-elev-3);z-index:99;
   max-width:min(560px,calc(100vw - 32px));
   transition:opacity var(--dur-m) var(--ease-std),transform var(--dur-m) var(--ease-emph-out),visibility var(--dur-m) var(--ease-std);
 }
 #snack.on{opacity:1;visibility:visible;transform:translate(-50%,0)}
+#snack.leaving,.dialog-status.leaving{animation:fadeOut var(--dur-s) var(--ease-std) forwards}
+#snack .snack-text{flex:1;min-width:0}
+#snack button.icon{color:inherit;flex:0 0 40px}
 #snack:empty{display:none}
 .banner{
   background:var(--md-sys-color-error-container);color:var(--md-sys-color-on-error-container);
@@ -365,6 +386,7 @@ pre.code{
     transition:opacity var(--dur-s) var(--ease-std);pointer-events:none;
   }
   .navitem:hover::after{opacity:var(--md-state-hover)}
+  .navitem:focus-visible::after{opacity:var(--md-state-press)}
   .navitem:active::after{opacity:var(--md-state-press)}
   .navitem .pill{width:auto;height:auto;background:none!important;border-radius:0}
   .navitem .pill::after{display:none}
@@ -440,14 +462,19 @@ pre.code{
 .sesslist{flex:1;overflow-y:auto;padding:0 8px 12px;display:flex;flex-direction:column;gap:4px}
 .sessitem{
   border:0;background:none;font:inherit;text-align:left;cursor:pointer;color:var(--md-sys-color-on-surface);
-  display:flex;align-items:center;gap:8px;padding:10px 12px;border-radius:var(--md-shape-m);position:relative;overflow:hidden;
+  display:flex;align-items:center;gap:4px;padding:0 4px 0 0;border-radius:var(--md-shape-m);position:relative;
   transition:background-color var(--dur-s) var(--ease-std);
 }
-.sessitem::after{content:"";position:absolute;inset:0;background:currentColor;opacity:0;transition:opacity var(--dur-s) var(--ease-std);pointer-events:none}
-.sessitem:hover::after{opacity:var(--md-state-hover)}
+.sessitem.enter{animation:fadeUp var(--dur-m) var(--ease-emph-out)}
+.sessitem.leaving{animation:fadeOut var(--dur-s) var(--ease-std) forwards;pointer-events:none}
+.sess-select{border:0;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer;display:flex;align-items:center;gap:8px;flex:1;min-width:0;padding:12px;border-radius:var(--md-shape-m);position:relative;overflow:hidden}
+.sess-select::after{content:"";position:absolute;inset:0;background:currentColor;opacity:0;transition:opacity var(--dur-s) var(--ease-std);pointer-events:none}
+.sess-select:hover::after{opacity:var(--md-state-hover)}
+.sess-select:focus-visible::after,.sess-select:active::after{opacity:var(--md-state-press)}
 .sessitem .t{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13.5px}
 .sessitem .del{visibility:hidden}
-.sessitem:hover .del,.sessitem[aria-current=true] .del{visibility:visible}
+.sessitem:hover .del,.sessitem:focus-within .del,.sessitem[aria-current=true] .del{visibility:visible}
+@media(hover:none){.sessitem .del{visibility:visible}}
 .sessitem[aria-current=true]{background:var(--md-sys-color-secondary-container);color:var(--md-sys-color-on-secondary-container)}
 .sessempty{padding:24px 16px;color:var(--md-sys-color-on-surface-variant);font-size:13px;text-align:center}
 .sesserror{padding:12px;color:var(--md-sys-color-on-surface-variant);font-size:12px;border:1px solid var(--md-sys-color-outline-variant);border-radius:var(--md-shape-m)}
@@ -479,7 +506,8 @@ pre.code{
   border-radius:2px;animation:blink 900ms steps(1) infinite;margin-left:2px;
 }
 @keyframes blink{50%{opacity:0}}
-.msg.entering{animation:fadeUp var(--dur-m) var(--ease-emph-out) both}
+.msg.entering,.toolcard.entering{animation:fadeUp var(--dur-m) var(--ease-emph-out)}
+.statusrow{animation:fadeIn var(--dur-s) var(--ease-std)}
 .syschip{
   align-self:center;font-size:11.5px;color:var(--md-sys-color-on-surface-variant);
   background:var(--md-sys-color-surface-container);border-radius:var(--md-shape-full);padding:4px 12px;
@@ -495,6 +523,7 @@ pre.code{
   padding:12px 16px;min-height:48px;max-height:180px;line-height:1.5;
   transition:border-color var(--dur-s) var(--ease-std),background-color var(--dur-m) var(--ease-std);
 }
+.composer textarea:hover{border-color:var(--md-sys-color-outline)}
 .composer textarea:focus{outline:none;border-color:var(--md-sys-color-primary)}
 .composer .send{width:48px;height:48px;min-width:48px;border-radius:var(--md-shape-l)}
 .composer .hintbar{max-width:820px;margin:6px auto 0;font-size:11px;color:var(--md-sys-color-on-surface-variant);display:flex;gap:8px;align-items:center}
@@ -538,7 +567,9 @@ pre.code{
 .statusrow{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--md-sys-color-on-surface-variant)}
 .statusrow svg.i{width:14px;height:14px;animation:spin 1.2s linear infinite}
 .think{border-left:3px solid var(--md-sys-color-outline-variant);padding:2px 0 2px 12px;max-width:680px}
-.think .thead{display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none;font-size:12px;font-weight:500;color:var(--md-sys-color-on-surface-variant);padding:2px 0}
+.think .thead{display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none;font:inherit;font-size:12px;font-weight:500;color:var(--md-sys-color-on-surface-variant);padding:4px;border:0;border-radius:var(--md-shape-xs);background:transparent;width:100%;text-align:left}
+.think .thead:hover{background:var(--md-sys-color-surface-container-highest)}
+.think .tbody{animation:fadeIn var(--dur-s) var(--ease-std)}
 .think .thead svg.i{width:13px;height:13px}
 .think .tbody{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12.5px;line-height:1.65;color:var(--md-sys-color-on-surface-variant);margin-top:6px}
 .think.done .tbody{display:none}

@@ -78,39 +78,90 @@ function makeEl(tag) {
       },
     },
     offsetWidth: 1,
+    isConnected: true,
+    tabIndex: 0,
+    hidden: false,
     attrs: {},
+    _queries: new Map(),
+    _events: {},
     setAttribute(k, v) { this.attrs[k] = String(v); },
+    removeAttribute(k) { delete this.attrs[k]; },
     getAttribute(k) { return this.attrs[k] ?? null; },
-    focus() {},
-    remove() {},
-    click() {},
-    showModal() {},
-    close() {},
-    addEventListener() {},
-    appendChild(child) { this.children.push(child); return child; },
-    querySelector(sel) { return pick(sel); },
+    focus() { document.activeElement = this; },
+    remove() {
+      this.isConnected = false;
+      if (this.parentNode) this.parentNode.children = this.parentNode.children.filter((c) => c !== this);
+    },
+    closest() { return this.hidden || this.inert ? this : null; },
+    matches() { return false; },
+    contains(el) { return this === el || this.children.includes(el) || [...this._queries.values()].includes(el); },
+    getClientRects() { return this.hidden ? [] : [{}]; },
+    reportValidity() { return Boolean(this.value); },
+    click() { if (this.onclick) this.onclick(); },
+    showModal() { this.open = true; },
+    close() { this.open = false; },
+    addEventListener(name, fn) { (this._events[name] ||= []).push(fn); },
+    removeEventListener(name, fn) { this._events[name] = (this._events[name] || []).filter((f) => f !== fn); },
+    dispatch(name, props = {}) {
+      const event = { target: this, preventDefault() { this.prevented = true; }, stopPropagation() { this.stopped = true; }, ...props };
+      for (const fn of [...(this._events[name] || [])]) fn(event);
+      return event;
+    },
+    appendChild(child) {
+      if (child.parentNode) child.parentNode.children = child.parentNode.children.filter((c) => c !== child);
+      this.children.push(child); child.parentNode = this; child.isConnected = true; return child;
+    },
+    querySelector(sel) {
+      if (this.tagName !== 'DIALOG' && !this.dataset.id && this !== singletons.get('#snack') && !this.attrs['aria-live']) return pick(sel);
+      if (!this._queries.has(sel)) {
+        const el = makeEl(sel.includes('input') ? 'input' : 'button');
+        const needle = sel.startsWith('#') ? 'id="' + sel.slice(1) + '"' : sel.startsWith('.') ? 'class="' + sel.slice(1) + '"' : sel;
+        const markup = this._html.split('<').find((s) => s.includes(needle)) || '';
+        el.value = /value="([^"]*)"/.exec(markup)?.[1] || '';
+        el.parentNode = this;
+        el.disabled = /\bdisabled\b/.test(markup);
+        this._queries.set(sel, el);
+      }
+      return this._queries.get(sel);
+    },
     querySelectorAll(sel) {
-      if (sel !== '.sessitem') return [];
-      const ids = [...this._html.matchAll(/class="sessitem"[^>]*data-id="([^"]+)"/g)].map((m) => m[1]);
-      const key = ids.join(',');
-      if (this._itemsKey !== key) {
-        this._itemsKey = key;
-        this._items = ids.map((id) => {
-          const item = makeEl();
-          item.dataset.id = id;
-          return item;
+      if (sel === '.sessitem') return this.children.filter((c) => c.dataset.id);
+      if (this.tagName === 'DIALOG' && sel.includes('button,input')) {
+        return ['.dialog-close', ...[...this._html.matchAll(/<(?:button|input|textarea|a)\b[^>]*id="([^"]+)"/g)].map((m) => '#' + m[1])].map((s) => this.querySelector(s));
+      }
+      if (['[data-del]', '[data-open]'].includes(sel)) {
+        const attr = sel.slice(1, -1);
+        return [...this._html.matchAll(new RegExp('<button[^>]*' + attr + '="([^"]+)"[^>]*>', 'g'))].map((m) => {
+          const key = attr + ':' + m[1];
+          if (!this._queries.has(key)) {
+            const b = makeEl('button'); b.dataset[attr.slice(5)] = m[1]; this._queries.set(key, b);
+          }
+          return this._queries.get(key);
         });
       }
-      return this._items || [];
+      return [];
     },
   };
   Object.defineProperty(e, 'innerHTML', {
-    get() { return this._html; },
+    get() {
+      if (this === singletons.get('#sesslist')) return this.children.map((c) => {
+        if (!c.dataset.id) return c.hidden ? '' : c._html;
+        return '<div class="sessitem" data-id="' + c.dataset.id + '"' + (c.attrs['aria-current'] ? ' aria-current="true"' : '') + '>' + c._html + [...c._queries.values()].map((q) => q.textContent).join('') + '</div>';
+      }).join('');
+      return this._html;
+    },
     set(v) {
       this._html = String(v);
-      this._itemsKey = null;
+      this._queries.clear();
+      this._sessions = this._status = null;
+      for (const child of this.children) child.isConnected = false;
       this.children = [];
       captured.push(String(v));
+      if (this === singletons.get('#root')) {
+        const old = singletons.get('#sesslist');
+        if (old) old.isConnected = false;
+        singletons.delete('#sesslist');
+      }
       // pane 换页后旧消息容器不再可查询，返回 Chat 时创建新实例。
       if (this === singletons.get('#pane')) {
         for (const id of ['#msglist', '#msgs', '#input', '#sendBtn', '#taskchips', '#sessUsage']) {
@@ -147,13 +198,15 @@ const drawerMedia = {
 };
 globalThis.localStorage = { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) };
 if (!globalThis.navigator) globalThis.navigator = {};
-globalThis.matchMedia = (query) => query.includes('840px') ? drawerMedia : { matches: false };
-globalThis.window = { matchMedia: globalThis.matchMedia, localStorage: globalThis.localStorage };
+const reducedMedia = { matches: false };
+let motionMs = 0;
+globalThis.matchMedia = (query) => query.includes('840px') ? drawerMedia : query.includes('reduced-motion') ? reducedMedia : { matches: false };
+globalThis.window = { matchMedia: globalThis.matchMedia, localStorage: globalThis.localStorage,
+  getComputedStyle: () => ({ animationDuration: motionMs + 'ms', animationDelay: '0ms' }) };
 document.addEventListener = (name, fn) => { events[name] = fn; };
 document.body.dataset.base = embedded ? '/agent' : '';
 document.body.dataset.embedded = embedded ? '1' : '';
-globalThis.confirm = () => false;
-globalThis.prompt = () => null;
+globalThis.confirm = globalThis.prompt = globalThis.alert = () => { throw new Error('Native popup must not be used'); };
 // 故意不提供 WebSocket：测 REST 降级路径
 if (!globalThis.Response) globalThis.Response = class {};
 
@@ -180,8 +233,13 @@ let holdTasks = null;
 let holdUsage = null;
 let holdMessage = null;
 let holdSettings = null;
+let holdFile = null;
+let fileSaveFail = false;
+let truncated = false;
 const requests = [];
-globalThis.fetch = async (url) => {
+const writes = [];
+globalThis.fetch = async (url, options = {}) => {
+  if (options.method) writes.push({ url: String(url), ...options });
   const u = String(url);
   requests.push(u);
   if (u.endsWith('/api/session')) return jsonRes({ authed: true, hasPassword: true });
@@ -209,7 +267,11 @@ globalThis.fetch = async (url) => {
   }
   if (u.match(/\/api\/sessions\/s1\/tasks/)) return holdTasks ? holdTasks.promise : jsonRes({ tasks: [{ id: 't1', instruction: '提醒浇水', due_at: NOW + 60000, created_at: NOW }] });
   if (u.includes('/api/files')) return jsonRes({ ok: true, files: [{ path: 'notes/a.md', size: 1234, mtime: Math.floor(NOW / 1000) }] });
-  if (u.includes('/api/file')) return jsonRes({ ok: true, path: 'notes/a.md', content: '# hello', truncated: false });
+  if (u.includes('/api/file')) {
+    if (options.method === 'PUT' && fileSaveFail) return jsonRes({ error: '保存失败测试' }, 500);
+    if (holdFile && !options.method) return holdFile.promise;
+    return jsonRes({ ok: true, path: 'notes/a.md', content: '# hello', truncated });
+  }
   if (u.includes('/api/search')) return jsonRes({ ok: true, count: 1, hits: [{ path: 'notes/a.md', snippet: 'hello world' }] });
   return jsonRes({ ok: true });
 };
@@ -459,6 +521,185 @@ await settle();
 ok('重连中的回合完成后补全落盘历史', messageText().includes('写好了。') && newWs.closed && sockets.at(-1) !== newWs);
 ok('API / WS 保留部署路径前缀', requests.every((u) => u.startsWith((embedded ? '/agent' : '') + '/api/')) && sockets.every((ws) => ws.url.includes((embedded ? '/agent' : '') + '/ws?session=')));
 navBtns[2].onclick(); // 关闭 ping 定时器
+
+console.log('\n[7] MD3 对话框 / 键盘 / 动效');
+const currentDialog = () => document.body.children.find((el) => el.tagName === 'DIALOG' && el.open);
+const delSession = () => pick('#sesslist').querySelectorAll('.sessitem')[0].querySelector('[data-del]');
+navBtns[0].onclick();
+await settle();
+const opener = delSession();
+opener.focus();
+const beforeDelete = writes.filter((w) => w.method === 'DELETE').length;
+let confirmation = opener.onclick({ stopPropagation() {} });
+let dlg = currentDialog();
+ok('删除会话使用有标题/描述的 modal 与关闭按钮', dlg && dlg.attrs['aria-labelledby'] && dlg.attrs['aria-describedby'] === 'dialog-description' && dlg.attrs['aria-modal'] === 'true' && dlg.innerHTML.includes('dialog-close'));
+ok('删除初始焦点位于安全的取消按钮', document.activeElement === dlg.querySelector('#dialog-cancel'));
+ok('modal 打开期间锁定页面滚动', document.body.classList.contains('dialog-open'));
+const focusables = dlg.querySelectorAll('button,input,select,textarea,a[href],[tabindex]');
+focusables.at(-1).focus();
+const forward = dlg.dispatch('keydown', { key: 'Tab' });
+ok('Tab 从末尾循环到第一个按钮', forward.prevented && document.activeElement === focusables[0]);
+const backward = dlg.dispatch('keydown', { key: 'Tab', shiftKey: true });
+ok('Shift+Tab 从首项循环到末尾', backward.prevented && document.activeElement === focusables.at(-1));
+dlg.dispatch('keydown', { key: 'Escape' });
+await confirmation;
+ok('Escape 关闭、归还焦点、取消不发送 DELETE', !currentDialog() && !document.body.classList.contains('dialog-open') && document.activeElement === opener && writes.filter((w) => w.method === 'DELETE').length === beforeDelete);
+confirmation = opener.onclick({ stopPropagation() {} });
+dlg = currentDialog();
+const cancel = dlg.dispatch('cancel');
+await confirmation;
+ok('原生 cancel 事件走统一清理', cancel.prevented && !dlg.isConnected && !currentDialog());
+confirmation = opener.onclick({ stopPropagation() {} });
+currentDialog().querySelector('.dialog-close').onclick();
+await confirmation;
+ok('显式 X 关闭按钮取消确认', !currentDialog());
+confirmation = opener.onclick({ stopPropagation() {} });
+currentDialog().querySelector('#dialog-accept').onclick();
+await confirmation;
+ok('确认删除只发送一次、使用正确会话路径', writes.filter((w) => w.method === 'DELETE').length === beforeDelete + 1 && writes.filter((w) => w.method === 'DELETE').at(-1).url.endsWith('/api/sessions/s1'));
+confirmation = delSession().onclick({ stopPropagation() {} });
+dlg = currentDialog();
+navBtns[1].onclick();
+await confirmation;
+await settle();
+ok('切页立即关闭对话框、不执行过期删除', !dlg.isConnected && !currentDialog() && writes.filter((w) => w.method === 'DELETE').length === beforeDelete + 1);
+
+const fileOpen = pick('#filelist').querySelectorAll('[data-open]')[0];
+await fileOpen.onclick();
+dlg = currentDialog();
+ok('文件预览复用 modal，内容安全使用 textContent', dlg && dlg.querySelector('#pvView').textContent === '# hello' && !checkBalance(dlg.innerHTML));
+dlg.querySelector('#pvToggle').onclick();
+ok('编辑模式移动焦点到带标签的 textarea', document.activeElement === dlg.querySelector('#pvEdit') && dlg.innerHTML.includes('label for="pvEdit"'));
+fileSaveFail = true;
+await dlg.querySelector('#pvToggle').onclick();
+ok('保存失败保留编辑状态，错误可在 top layer 内阅读', !dlg.querySelector('#pvEditField').hidden && !dlg.querySelector('.dialog-status').hidden);
+fileSaveFail = false;
+await dlg.querySelector('#pvToggle').onclick();
+ok('保存成功切到预览并在 modal 内提示', dlg.querySelector('#pvEditField').hidden && !dlg.querySelector('#pvView').hidden && !dlg.querySelector('.dialog-status').hidden);
+dlg.querySelector('#pvClose').onclick();
+ok('预览关闭恢复仍连接的打开按钮焦点', !currentDialog() && document.activeElement === fileOpen);
+truncated = true;
+await pick('#filelist').querySelectorAll('[data-open]')[0].onclick();
+dlg = currentDialog();
+ok('截断预览禁用编辑，避免保存不完整内容', dlg.querySelector('#pvToggle').disabled);
+dlg.querySelector('.dialog-close').onclick();
+truncated = false;
+holdFile = deferred();
+const pendingPreview = pick('#filelist').querySelectorAll('[data-open]')[0].onclick();
+navBtns[2].onclick();
+holdFile.resolve(jsonRes({ content: '过期预览' }));
+holdFile = null;
+await pendingPreview;
+ok('离开文件页后延迟响应不会打开幽灵 modal', !currentDialog());
+navBtns[1].onclick();
+await settle();
+holdFile = deferred();
+const stalePreview = pick('#filelist').querySelectorAll('[data-open]')[0].onclick();
+const previewResponse = holdFile;
+holdFile = null;
+await pick('#filelist').querySelectorAll('[data-open]')[0].onclick();
+const latestDialog = currentDialog();
+previewResponse.resolve(jsonRes({ content: '旧文件预览' }));
+await stalePreview;
+ok('乱序预览响应不会替换最新 modal', currentDialog() === latestDialog && latestDialog.querySelector('#pvView').textContent === '# hello');
+latestDialog.querySelector('.dialog-close').onclick();
+const inputFile = pick('#fileInput');
+inputFile.files = [{ name: 'upload.md', size: 10, text: async () => 'hello' }];
+const pendingUpload = inputFile.onchange();
+dlg = currentDialog();
+ok('上传路径 prompt 已换成带标签的 modal 输入', dlg && document.activeElement === dlg.querySelector('#dialog-input') && dlg.querySelector('#dialog-input').value === 'upload.md');
+dlg.querySelector('#dialog-input').value = '';
+dlg.querySelector('#dialog-accept').onclick();
+ok('空路径不关闭 modal', currentDialog() === dlg);
+dlg.querySelector('#dialog-input').value = 'notes/upload.md';
+dlg.querySelector('#dialog-input').onkeydown({ key: 'Enter', preventDefault() {} });
+await pendingUpload;
+ok('Enter 确认上传路径并请求上传接口', writes.some((w) => w.url.endsWith('/api/upload?path=notes%2Fupload.md')));
+const snack = pick('#snack');
+ok('toast 是非模态 status snackbar，带键盘可达关闭按钮', snack.attrs.role === 'status' && snack.attrs['aria-live'] === 'polite' && snack.innerHTML.includes('snack-close'));
+snack.querySelector('.snack-close').onclick();
+ok('关闭提示不会留下可聚焦隐藏按钮', snack.hidden);
+const fileDel = pick('#filelist').querySelectorAll('[data-del]')[0];
+const pendingFileDelete = fileDel.onclick();
+dlg = currentDialog();
+ok('文件删除也使用同一明确的确认 modal', dlg && dlg.innerHTML.includes('notes/a.md'));
+dlg.querySelector('#dialog-cancel').onclick();
+await pendingFileDelete;
+
+motionMs = 250;
+navBtns[2].onclick();
+ok('切 tab 重启动画钩子', pick('#pane').classList.contains('enter'));
+pick('#pane').dispatch('animationend');
+ok('页动画结束释放 enter 类', !pick('#pane').classList.contains('enter'));
+navBtns[0].onclick();
+await settle();
+const kept = pick('#sesslist').querySelectorAll('.sessitem')[0];
+pick('#refreshSess').onclick();
+await settle();
+ok('刷新列表复用节点、不重复入场', pick('#sesslist').querySelectorAll('.sessitem')[0] === kept);
+sessionsData = [...sessionsData, { id: 's3', title: '动效会话', updated_at: NOW }];
+pick('#refreshSess').onclick();
+await settle();
+const entering = pick('#sesslist').querySelectorAll('.sessitem').find((el) => el.dataset.id === 's3');
+ok('仅新增会话挂 enter 动画', entering.classList.contains('enter'));
+entering.dispatch('animationend');
+sessionsData = sessionsData.filter((s) => s.id !== 's3');
+pick('#refreshSess').onclick();
+await settle();
+ok('移除会话先退出并 inert，再结束后移除', entering.classList.contains('leaving') && entering.inert && entering.isConnected);
+entering.dispatch('animationend');
+ok('退出结束确实清理节点', !entering.isConnected);
+const leavingAgain = { id: 's4', title: '回归会话', updated_at: NOW };
+sessionsData = [...sessionsData, leavingAgain];
+pick('#refreshSess').onclick();
+await settle();
+const returning = pick('#sesslist').querySelectorAll('.sessitem').find((el) => el.dataset.id === 's4');
+sessionsData = sessionsData.filter((s) => s.id !== 's4');
+pick('#refreshSess').onclick();
+await settle();
+sessionsData = [...sessionsData, leavingAgain];
+pick('#refreshSess').onclick();
+await settle();
+returning.dispatch('animationend');
+ok('退出途中重新出现的 id 取消删除/解除 inert', returning.isConnected && !returning.inert && !returning.classList.contains('leaving'));
+const selectFocus = kept.querySelector('.sess-select');
+selectFocus.focus();
+sessionsData = [...sessionsData].reverse();
+pick('#refreshSess').onclick();
+await settle();
+ok('排序变化仍保留列表选择按钮焦点', document.activeElement === selectFocus && pick('#sesslist').querySelectorAll('.sessitem')[0].dataset.id === sessionsData[0].id);
+confirmation = delSession().onclick({ stopPropagation() {} });
+dlg = currentDialog();
+dlg.querySelector('#dialog-cancel').onclick();
+ok('modal 退出期间保持 top layer 和 scrim', dlg.open && dlg.classList.contains('leaving'));
+dlg.dispatch('animationcancel');
+dlg.dispatch('animationend', { pseudoElement: '::backdrop' });
+ok('入场取消/backdrop 结束不会提前清理 modal', dlg.open && dlg.isConnected);
+dlg.dispatch('animationend');
+await confirmation;
+ok('modal 退出结束清理并归还焦点', !dlg.open && !dlg.isConnected);
+reducedMedia.matches = true;
+navBtns[2].onclick();
+ok('reduced-motion 不重启页入场', !pick('#pane').classList.contains('enter'));
+navBtns[0].onclick();
+await settle();
+confirmation = delSession().onclick({ stopPropagation() {} });
+dlg = currentDialog();
+dlg.querySelector('#dialog-cancel').onclick();
+await confirmation;
+ok('reduced-motion 关闭不等待动画', !dlg.open);
+const liveWs = sockets.at(-1);
+liveWs.onmessage({ data: JSON.stringify({ type: 'delta', text: '动效流' }) });
+const live = pick('#msglist').children.at(-1);
+ok('流式消息只在首次创建时有 entering 钩子', live.className.includes('entering'));
+liveWs.onmessage({ data: JSON.stringify({ type: 'delta', text: '追加' }) });
+ok('后续流式增量复用原节点、不重新插入', pick('#msglist').children.at(-1) === live);
+ok('历史重载不让每条消息重复入场', !pick('#msglist').children.filter((e) => e.textContent === '帮我建个文件').some((e) => e.className.includes('entering')));
+ok('pane 使用无 transform 的 fadeIn（静态 CSS）', css.includes('#pane.enter{animation:fadeIn var(--dur-m) var(--ease-emph-out)}'));
+ok('dialog scrim / exit 使用现有时长令牌（静态 CSS）', css.includes('dialog::backdrop{background:var(--md-sys-color-scrim)') && css.includes('dialog.leaving{animation:dlgOut var(--dur-s)'));
+ok('reduced-motion 去除延迟及滚动动画（静态 CSS）', css.includes('animation-delay:0ms!important') && css.includes('scroll-behavior:auto!important'));
+ok('没有原生 alert/confirm/prompt 调用（静态源码）', !/\b(?:alert|confirm|prompt)\s*\(/.test(src));
+navBtns[2].onclick();
 
 console.log('\n' + (fail ? '❌' : '✅') + ' 通过 ' + pass + ' 项，失败 ' + fail + ' 项\n');
 process.exit(fail ? 1 : 0);

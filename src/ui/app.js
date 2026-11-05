@@ -82,16 +82,169 @@ export function uiApp() {
     return (n / 1048576).toFixed(2) + ' MB';
   }
 
+  var activeDialog = null;
+  var dialogSeq = 0;
+  var viewSeq = 0;
+  var previewRequest = 0;
+  var reducedMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)');
+
+  // CSS 令牌决定等待时长；没有动画/减少动态效果时立即完成。
+  function afterMotion(el, done) {
+    var timer, cancelled = false;
+    function finish(e) {
+      if (e && (e.target !== el || e.pseudoElement)) return;
+      if (cancelled) return;
+      cancelled = true;
+      clearTimeout(timer);
+      el.removeEventListener('animationend', finish);
+      done();
+    }
+    var style = window.getComputedStyle && window.getComputedStyle(el);
+    var seconds = function (value) { return parseFloat(value) * (String(value).trim().endsWith('ms') ? 1 : 1000) || 0; };
+    var duration = style ? seconds(style.animationDuration) + seconds(style.animationDelay) : 0;
+    if ((reducedMotion && reducedMotion.matches) || !duration) finish();
+    else {
+      el.addEventListener('animationend', finish);
+      timer = setTimeout(finish, duration + 50);
+    }
+    return function () {
+      cancelled = true;
+      clearTimeout(timer);
+      el.removeEventListener('animationend', finish);
+    };
+  }
+
+  function enter(el) {
+    if (el._enterCancel) el._enterCancel();
+    el.classList.remove('enter');
+    if (reducedMotion && reducedMotion.matches) return;
+    void el.offsetWidth;
+    el.classList.add('enter');
+    el._enterCancel = afterMotion(el, function () { el.classList.remove('enter'); });
+  }
+
+  function focusBack(el) {
+    if (el && el.isConnected && !el.disabled && !el.closest('[inert],[hidden]')) el.focus();
+    else {
+      var fallback = S.tab === 'chat' ? $('#sessBtn') : $('.navitem[aria-selected="true"]');
+      if (fallback) fallback.focus();
+    }
+  }
+
+  // 原生 showModal 使用 top layer，不受 pane 动画或抽屉 z-index 影响。
+  function dialog(opts) {
+    if (activeDialog) activeDialog.dismiss(null, true, false);
+    var opener = opts.opener || document.activeElement;
+    var dlg = document.createElement('dialog');
+    var titleId = 'dialog-title-' + (++dialogSeq);
+    dlg.setAttribute('aria-labelledby', titleId);
+    dlg.setAttribute('aria-modal', 'true');
+    dlg.tabIndex = -1;
+    dlg.innerHTML = '<div class="dialog-head"><h3 class="title-l" id="' + titleId + '">' + esc(opts.title) + '</h3>' +
+      '<button class="icon dialog-close" aria-label="关闭对话框">' + svg('close') + '</button></div>' +
+      '<div class="dialog-body">' + (opts.body || '') + '</div>' +
+      '<div class="dialog-status" role="status" aria-live="polite" hidden></div>' +
+      '<div class="actions">' + (opts.actions || '') + '</div>';
+    var closing = false, closed = false, cancelMotion;
+    var result;
+    var promise = new Promise(function (resolve) { result = resolve; });
+    function finish(value, restore) {
+      if (closed) return;
+      closed = true;
+      if (cancelMotion) cancelMotion();
+      if (activeDialog === dlg) { activeDialog = null; document.body.classList.remove('dialog-open'); }
+      dlg.close();
+      dlg.remove();
+      if (restore !== false) focusBack(opener);
+      result(value);
+    }
+    dlg.dismiss = function (value, immediate, restore) {
+      if (closed) return;
+      if (immediate) { finish(value, restore); return; }
+      if (closing) return;
+      closing = true;
+      dlg.classList.add('leaving');
+      cancelMotion = afterMotion(dlg, function () { finish(value, restore); });
+    };
+    dlg.addEventListener('cancel', function (e) { e.preventDefault(); dlg.dismiss(null); });
+    dlg.addEventListener('close', function () { finish(null); });
+    dlg.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); dlg.dismiss(null); return; }
+      if (e.key !== 'Tab') return;
+      var els = Array.from(dlg.querySelectorAll('button,input,select,textarea,a[href],[tabindex]')).filter(function (el) {
+        return !el.disabled && el.tabIndex >= 0 && !el.hidden && el.getClientRects().length && !el.closest('[hidden],[inert]');
+      });
+      var first = els[0], last = els[els.length - 1];
+      if (!first) { e.preventDefault(); dlg.focus(); }
+      else if (e.shiftKey && (document.activeElement === first || document.activeElement === dlg)) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && (document.activeElement === last || document.activeElement === dlg)) { e.preventDefault(); first.focus(); }
+    });
+    $('.dialog-close', dlg).onclick = function () { dlg.dismiss(null); };
+    document.body.appendChild(dlg);
+    activeDialog = dlg;
+    document.body.classList.add('dialog-open');
+    if (opts.bind) opts.bind(dlg);
+    dlg.showModal();
+    var initial = opts.initial && $(opts.initial, dlg);
+    (initial || $('.dialog-close', dlg)).focus();
+    return { el: dlg, result: promise };
+  }
+
+  async function ask(title, message, opener, value) {
+    var input = value !== undefined;
+    var d = dialog({
+      title: title, opener: opener,
+      body: '<p class="body-m" id="dialog-description">' + esc(message) + '</p>' +
+        (input ? '<div class="field"><label for="dialog-input">工作区路径</label><input id="dialog-input" value="' + esc(value) + '" required></div>' : ''),
+      actions: '<button class="btn text" id="dialog-cancel">取消</button><button class="btn ' + (input ? '' : 'danger') + '" id="dialog-accept">' + (input ? '上传' : '删除') + '</button>',
+      initial: input ? '#dialog-input' : '#dialog-cancel',
+      bind: function (dlg) {
+        dlg.setAttribute('aria-describedby', 'dialog-description');
+        $('#dialog-cancel', dlg).onclick = function () { dlg.dismiss(null); };
+        var accept = function () {
+          var field = input && $('#dialog-input', dlg);
+          if (field && !field.value.trim()) { field.value = ''; field.focus(); field.reportValidity(); return; }
+          dlg.dismiss(field ? field.value.trim() : true);
+        };
+        $('#dialog-accept', dlg).onclick = accept;
+        if (input) $('#dialog-input', dlg).onkeydown = function (e) { if (e.key === 'Enter') { e.preventDefault(); accept(); } };
+      },
+    });
+    return d.result;
+  }
+
+  function showSnack(el, msg, ms) {
+    clearTimeout(el._t);
+    if (el._exitCancel) el._exitCancel();
+    el.classList.remove('leaving');
+    if (!el._snackReady) {
+      el.innerHTML = '<span class="snack-text"></span><button class="icon snack-close" aria-label="关闭提示">' + svg('close') + '</button>';
+      el._snackReady = true;
+    }
+    $('.snack-text', el).textContent = msg;
+    el.hidden = false;
+    el.classList.add('on');
+    function dismiss() {
+      clearTimeout(el._t);
+      if (el.contains(document.activeElement)) {
+        if (activeDialog) $('.dialog-close', activeDialog).focus(); else focusBack(null);
+      }
+      el.classList.add('leaving');
+      el._exitCancel = afterMotion(el, function () { el.hidden = true; el.classList.remove('on', 'leaving'); });
+    }
+    function resume() { clearTimeout(el._t); el._t = setTimeout(dismiss, ms || 6000); }
+    $('.snack-close', el).onclick = dismiss;
+    el.onmouseenter = el.onfocusin = function () { clearTimeout(el._t); };
+    el.onmouseleave = el.onfocusout = resume;
+    resume();
+    if (el.contains(document.activeElement) || el.matches(':hover')) clearTimeout(el._t);
+  }
+
   function toast(msg, ms) {
     var el = $('#snack');
-    if (!el) return;
-    el.textContent = msg;
-    el.classList.add('on');
-    clearTimeout(el._t);
-    el._t = setTimeout(function () {
-      el.classList.remove('on');
-      setTimeout(function () { if (!el.classList.contains('on')) el.textContent = ''; }, 300);
-    }, ms || 3200);
+    if (el) { el.setAttribute('role', 'status'); el.setAttribute('aria-live', 'polite'); showSnack(el, msg, ms); }
+    // 普通 snackbar 在 top layer 之下；对话框中的状态区也显示保存/错误结果。
+    if (activeDialog) showSnack($('.dialog-status', activeDialog), msg, ms);
   }
 
   async function api(path, body, method) {
@@ -173,11 +326,15 @@ export function uiApp() {
     }
   }
   if (mobileDrawers && mobileDrawers.addEventListener) mobileDrawers.addEventListener('change', function () { setDrawer(''); });
-  document.addEventListener('keydown', function (e) { if (e.key === 'Escape') setDrawer(''); });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && !activeDialog) setDrawer('');
+  });
 
   // ---------- 登录 ----------
 
   function renderLogin() {
+    viewSeq++;
+    if (activeDialog) activeDialog.dismiss(null, true, false);
     closeWs();
     S.cur = null;
     setDrawer('');
@@ -216,6 +373,7 @@ export function uiApp() {
 
   function render() {
     if (!S.authed) { renderLogin(); return; }
+    if (activeDialog) activeDialog.dismiss(null, true, false);
     closeWs();
     if (S.cur) S.cur = { id: S.cur.id };
     root.innerHTML =
@@ -289,6 +447,8 @@ export function uiApp() {
   }
 
   function showTab(tab) {
+    viewSeq++;
+    if (activeDialog) activeDialog.dismiss(null, true, false);
     // 切页前断开实时通道、释放 DOM 引用；保留 id 供返回时重载。
     closeWs();
     if (S.cur) S.cur = { id: S.cur.id };
@@ -304,6 +464,7 @@ export function uiApp() {
     if (tab === 'chat') renderChat(pane);
     else if (tab === 'files') renderFiles(pane);
     else if (tab === 'settings') renderSettings(pane);
+    enter(pane);
   }
 
   // ---------- 会话视图 ----------
@@ -366,41 +527,53 @@ export function uiApp() {
   function paintSessions() {
     var list = $('#sesslist');
     if (!list) return;
-    var status = S.sessionsError
-      ? '<div class="sesserror" role="status">会话列表加载失败：' + esc(S.sessionsError) + '<br><button class="btn text small" id="retrySess">重试</button></div>'
-      : '';
-    list.innerHTML = status + (S.sessions.length ? S.sessions.map(function (s) {
-      return '<div class="sessitem" role="button" data-id="' + esc(s.id) + '"' + (S.cur && S.cur.id === s.id ? ' aria-current="true"' : '') + '>' +
-        '<span class="t">' + esc(s.title || '新会话') + '</span>' +
-        '<span class="body-s muted">' + esc(when(s.updated_at)) + '</span>' +
-        '<button class="icon del" data-del="' + esc(s.id) + '" aria-label="删除会话">' + svg('trash') + '</button>' +
-        '</div>';
-    }).join('') : (status ? '' : '<div class="sessempty">' + (S.sessionsLoading ? '加载中…' : '还没有会话。<br>点右上角 + 新建一个。') + '</div>'));
-    var retry = $('#retrySess', list);
-    if (retry) retry.onclick = function () {
+    // 按 id 复用节点：刷新标题/选中态不会重启动画，也不会丢键盘焦点。
+    var items = list._sessions || (list._sessions = new Map());
+    var status = list._status;
+    if (!status) { status = list._status = document.createElement('div'); list.appendChild(status); }
+    status.className = S.sessionsError ? 'sesserror' : 'sessempty';
+    status.hidden = !S.sessionsError && Boolean(S.sessions.length);
+    status.innerHTML = S.sessionsError
+      ? '<span role="status">会话列表加载失败：' + esc(S.sessionsError) + '</span><br><button class="btn text small" id="retrySess">重试</button>'
+      : (S.sessionsLoading ? '加载中…' : '还没有会话。<br>点右上角 + 新建一个。');
+    if (S.sessionsError) $('#retrySess', status).onclick = function () {
       loadSessions().then(function (loaded) {
         if (loaded && S.tab === 'chat' && !S.cur && S.sessions.length) openSession(S.sessions[0].id);
       });
     };
-    var items = list.querySelectorAll('.sessitem');
-    for (var i = 0; i < items.length; i++) {
-      (function (el) {
+    var ids = new Set(S.sessions.map(function (s) { return s.id; }));
+    items.forEach(function (el, id) {
+      if (ids.has(id) || el._leaving) return;
+      el._leaving = true;
+      el.inert = true;
+      el.classList.add('leaving');
+      if (el.contains(document.activeElement)) focusBack($('#newSess'));
+      el._exitCancel = afterMotion(el, function () { el.remove(); items.delete(id); });
+    });
+    S.sessions.forEach(function (s) {
+      var el = items.get(s.id);
+      if (!el) {
+        el = document.createElement('div');
+        el.className = 'sessitem';
+        el.dataset.id = s.id;
+        el.innerHTML = '<button class="sess-select"><span class="t"></span><span class="body-s muted sess-time"></span></button>' +
+          '<button class="icon del" data-del="' + esc(s.id) + '" aria-label="删除会话">' + svg('trash') + '</button>';
+        var select = $('.sess-select', el);
+        select.onclick = function () { setDrawer(''); openSession(s.id); };
+        // 保留整行点击（不把 button 嵌在 role=button 中）。
         el.onclick = function (e) {
-          if (e.target && e.target.closest && e.target.closest('[data-del]')) return;
-          setDrawer(''); // 移动端抽屉选中后自动收起
-          openSession(el.dataset.id);
+          if (e.target && e.target.closest && e.target.closest('button')) return;
+          select.onclick();
         };
-      })(items[i]);
-    }
-    var dels = list.querySelectorAll('[data-del]');
-    for (var j = 0; j < dels.length; j++) {
-      (function (btn) {
-        btn.onclick = async function (e) {
+        var del = $('[data-del]', el);
+        del.onclick = async function (e) {
           e.stopPropagation();
-          if (!confirm('删除这个会话？聊天记录不可恢复。')) return;
+          var epoch = viewSeq;
+          if (!await ask('删除会话？', $('.t', el).textContent + ' · 聊天记录不可恢复。', del) || epoch !== viewSeq) return;
+          del.disabled = true;
           try {
-            await api('sessions/' + btn.dataset.del, undefined, 'DELETE');
-            if (S.cur && S.cur.id === btn.dataset.del) { closeWs(); S.cur = null; }
+            await api('sessions/' + s.id, undefined, 'DELETE');
+            if (S.cur && S.cur.id === s.id) { closeWs(); S.cur = null; }
             await loadSessions();
             if (S.tab === 'chat' && !S.cur) {
               if (S.sessions.length) openSession(S.sessions[0].id);
@@ -408,8 +581,29 @@ export function uiApp() {
             }
             toast('会话已删除');
           } catch (err) { toast(err.message); }
+          finally { del.disabled = false; }
         };
-      })(dels[j]);
+        items.set(s.id, el);
+        list.appendChild(el);
+        enter(el);
+      } else if (el._leaving) {
+        if (el._exitCancel) el._exitCancel();
+        el._leaving = false;
+        el.inert = false;
+        el.classList.remove('leaving');
+      }
+      $('.t', el).textContent = s.title || '新会话';
+      $('.sess-time', el).textContent = when(s.updated_at);
+      var selected = Boolean(S.cur && S.cur.id === s.id);
+      if (selected) el.setAttribute('aria-current', 'true'); else el.removeAttribute('aria-current');
+      $('.sess-select', el).setAttribute('aria-current', String(selected));
+    });
+    // 只有顺序真的变化才移动节点，避免每次刷新打断焦点。
+    var ordered = Array.from(list.children).filter(function (el) { return el.dataset.id && !el._leaving; });
+    if (ordered.some(function (el, i) { return el.dataset.id !== S.sessions[i].id; })) {
+      var focused = list.contains(document.activeElement) ? document.activeElement : null;
+      S.sessions.forEach(function (s) { list.appendChild(items.get(s.id)); });
+      if (focused) focusBack(focused);
     }
   }
 
@@ -465,7 +659,7 @@ export function uiApp() {
   function paintStored(m) {
     var list = $('#msglist');
     if (!list) return;
-    if (m.role === 'user') addBubble('user', m.content);
+    if (m.role === 'user') addBubble('user', m.content, true);
     else if (m.role === 'assistant') {
       // 历史思考过程：折叠块可展开回看（持久化在 DO 的消息行里）
       if (m.reasoning) {
@@ -475,7 +669,7 @@ export function uiApp() {
       }
       if (m.content) {
         var div = document.createElement('div');
-        div.className = 'msg assistant entering';
+        div.className = 'msg assistant';
         div.innerHTML = md(m.content); // 历史消息直接渲染 markdown
         list.appendChild(div);
       }
@@ -587,7 +781,7 @@ export function uiApp() {
     }
     if (e.type === 'tool_end') {
       if (S.cur.toolCard) {
-        S.cur.toolCard.className = 'toolcard' + (e.ok ? '' : ' err');
+        S.cur.toolCard.classList.toggle('err', !e.ok);
         var brief = S.cur.toolCard.querySelector('.brief');
         if (brief) {
           var text = e.brief || (e.ok ? '完成' : '失败');
@@ -656,14 +850,16 @@ export function uiApp() {
     var div = document.createElement('div');
     div.className = 'think' + (opts.done ? ' done' : '');
     div.innerHTML =
-      '<div class="thead" role="button">' + svg('clock') +
-      '<span class="ttext">' + esc(label) + '</span><span class="ttoggle body-s">' + (opts.done ? '展开' : '收起') + '</span></div>' +
+      '<button class="thead" type="button" aria-expanded="' + String(!opts.done) + '">' + svg('clock') +
+      '<span class="ttext">' + esc(label) + '</span><span class="ttoggle body-s">' + (opts.done ? '展开' : '收起') + '</span></button>' +
       '<div class="tbody"' + (opts.done ? ' style="display:none"' : '') + '></div>';
     var setOpen = function (open) {
       div.classList.toggle('open', open);
       div.querySelector('.tbody').style.display = open ? '' : 'none';
       div.querySelector('.ttoggle').textContent = open ? '收起' : '展开';
+      div.querySelector('.thead').setAttribute('aria-expanded', String(open));
     };
+    setOpen(!opts.done);
     div.querySelector('.thead').onclick = function () {
       setOpen(!div.classList.contains('open'));
     };
@@ -740,7 +936,6 @@ export function uiApp() {
       div.remove(); // 空回答（比如只调了工具）不留空块
     } else if (div) {
       // 流式期间为了性能显示纯文本，结束时整体渲染成 markdown
-      div.classList.remove('entering');
       div.innerHTML = md(raw);
     }
     S.cur.streamEl = null;
@@ -748,11 +943,11 @@ export function uiApp() {
     S.cur.streamRaw = '';
   }
 
-  function addBubble(role, text) {
+  function addBubble(role, text, stored) {
     var list = $('#msglist');
     if (!list) return null;
     var div = document.createElement('div');
-    div.className = 'msg ' + role + ' entering';
+    div.className = 'msg ' + role + (stored ? '' : ' entering');
     div.textContent = text;
     list.appendChild(div);
     return div;
@@ -762,7 +957,7 @@ export function uiApp() {
     var list = $('#msglist');
     if (!list) return null;
     var div = document.createElement('div');
-    div.className = 'toolcard' + (failed ? ' err' : '');
+    div.className = 'toolcard' + (done ? '' : ' entering') + (failed ? ' err' : '');
     div.innerHTML = svg('bolt') +
       '<span class="name">' + esc(name) + '</span>' +
       '<span class="brief" title="' + esc(argsJson || '') + '">' + esc(brief || '') + '</span>';
@@ -783,7 +978,7 @@ export function uiApp() {
     var list = $('#msglist');
     if (!list) return;
     var div = document.createElement('div');
-    div.className = 'msg error';
+    div.className = 'msg error entering';
     div.textContent = text;
     list.appendChild(div);
   }
@@ -874,8 +1069,9 @@ export function uiApp() {
       this.value = '';
       if (!f) return;
       if (f.size > 2 * 1024 * 1024) { toast('文件超过 2MB 上限'); return; }
-      var path = prompt('保存为工作区路径：', f.name);
-      if (!path) return;
+      var epoch = viewSeq;
+      var path = await ask('上传文件', '保存为工作区路径：', $('#uploadBtn'), f.name);
+      if (!path || epoch !== viewSeq) return;
       try {
         var text = await f.text();
         var res = await fetch(BASE + '/api/upload?path=' + encodeURIComponent(path), {
@@ -924,18 +1120,21 @@ export function uiApp() {
   function bindFileActions(box) {
     var opens = box.querySelectorAll('[data-open]');
     for (var i = 0; i < opens.length; i++) {
-      (function (btn) { btn.onclick = function () { previewFile(btn.dataset.open); }; })(opens[i]);
+      (function (btn) { btn.onclick = function () { return previewFile(btn.dataset.open, btn); }; })(opens[i]);
     }
     var dels = box.querySelectorAll('[data-del]');
     for (var j = 0; j < dels.length; j++) {
       (function (btn) {
         btn.onclick = async function () {
-          if (!confirm('删除 ' + btn.dataset.del + ' ？不可恢复。')) return;
+          var epoch = viewSeq;
+          if (!await ask('删除文件？', btn.dataset.del + ' · 不可恢复。', btn) || epoch !== viewSeq) return;
+          btn.disabled = true;
           try {
             await api('file?path=' + encodeURIComponent(btn.dataset.del), undefined, 'DELETE');
             toast('已删除');
-            loadFiles();
+            if (S.tab === 'files') loadFiles();
           } catch (e) { toast(e.message); }
+          finally { btn.disabled = false; }
         };
       })(dels[j]);
     }
@@ -959,54 +1158,64 @@ export function uiApp() {
     }
   }
 
-  async function previewFile(path) {
+  async function previewFile(path, opener) {
+    var epoch = viewSeq;
+    var request = ++previewRequest;
     var data = null;
     try {
       data = await api('file?path=' + encodeURIComponent(path));
-    } catch (e) { toast(e.message); return; }
+    } catch (e) { if (epoch === viewSeq) toast(e.message); return; }
+    if (request !== previewRequest || epoch !== viewSeq || S.tab !== 'files' || (activeDialog && activeDialog._kind !== 'preview')) return;
     var content = (data && data.content) || '';
-    var dlg = document.createElement('dialog');
-    dlg.innerHTML =
-      '<h3 class="title-m mono">' + esc(path) + '</h3>' +
-      '<div class="filepreview"><pre id="pvView"></pre><textarea id="pvEdit" style="display:none;width:100%;min-height:40vh;font-family:\'Roboto Mono\',ui-monospace,monospace;font-size:13px;padding:12px;border:1px solid var(--md-sys-color-outline);border-radius:12px;background:var(--md-sys-color-surface-container-highest);color:var(--md-sys-color-on-surface)"></textarea></div>' +
-      (data && data.truncated ? '<p class="body-s muted">内容过长只显示了前一部分，完整编辑请让 agent 处理。</p>' : '') +
-      '<div class="actions">' +
-      '<button class="btn text" id="pvClose">关闭</button>' +
-      '<a class="btn outlined small" href="' + BASE + '/api/download?path=' + encodeURIComponent(path) + '" download>' + svg('download') + '下载</a>' +
-      '<button class="btn outlined" id="pvToggle">' + svg('edit') + '编辑</button>' +
-      '</div>';
-    document.body.appendChild(dlg);
-    $('#pvView', dlg).textContent = content;
-    var editing = false;
-    $('#pvToggle', dlg).onclick = async function () {
-      editing = !editing;
-      $('#pvView', dlg).style.display = editing ? 'none' : '';
-      $('#pvEdit', dlg).style.display = editing ? '' : 'none';
-      if (editing) {
-        $('#pvEdit', dlg).value = content;
-        this.innerHTML = svg('doc') + '预览';
-      } else {
-        content = $('#pvEdit', dlg).value;
+    dialog({
+      title: path, opener: opener,
+      body: '<div class="filepreview"><pre id="pvView" tabindex="0" aria-label="文件预览"></pre>' +
+        '<div class="field" id="pvEditField" hidden><label for="pvEdit">文件内容</label><textarea id="pvEdit" class="file-editor"></textarea></div></div>' +
+        (data && data.truncated ? '<p class="body-s muted">内容过长只显示了前一部分，完整编辑请让 agent 处理。</p>' : ''),
+      actions: '<button class="btn text" id="pvClose">关闭</button>' +
+        '<a class="btn outlined small" href="' + BASE + '/api/download?path=' + encodeURIComponent(path) + '" download>' + svg('download') + '下载</a>' +
+        '<button class="btn outlined" id="pvToggle"' + (data && data.truncated ? ' disabled' : '') + '>' + svg('edit') + '编辑</button>',
+      initial: '#pvClose',
+      bind: function (dlg) {
+        dlg._kind = 'preview';
         $('#pvView', dlg).textContent = content;
-        this.innerHTML = svg('edit') + '编辑';
-        try {
-          var r = await fetch(BASE + '/api/file', {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ path: path, content: content }),
-            credentials: 'same-origin',
-          });
-          var out = null;
-          try { out = await r.json(); } catch (e) { /* 忽略 */ }
-          if (!r.ok || !out.ok) throw new Error((out && out.error) || '保存失败');
-          toast('已保存');
-          if (S.tab === 'files') loadFiles();
-        } catch (e) { toast(e.message); }
-      }
-    };
-    $('#pvClose', dlg).onclick = function () { dlg.close(); dlg.remove(); };
-    dlg.addEventListener('close', function () { dlg.remove(); });
-    dlg.showModal();
+        var editing = false;
+        $('#pvToggle', dlg).onclick = async function () {
+          var btn = this;
+          if (!editing) {
+            editing = true;
+            $('#pvView', dlg).hidden = true;
+            $('#pvEditField', dlg).hidden = false;
+            $('#pvEdit', dlg).value = content;
+            $('#pvEdit', dlg).focus();
+            btn.innerHTML = svg('doc') + '保存并预览';
+            return;
+          }
+          var next = $('#pvEdit', dlg).value;
+          btn.disabled = true;
+          try {
+            var r = await fetch(BASE + '/api/file', {
+              method: 'PUT', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ path: path, content: next }), credentials: 'same-origin',
+            });
+            var out = null;
+            try { out = await r.json(); } catch (e) { /* 忽略 */ }
+            if (!r.ok || !out || !out.ok) throw new Error((out && out.error) || '保存失败');
+            if (activeDialog !== dlg || epoch !== viewSeq) return;
+            content = next;
+            editing = false;
+            $('#pvView', dlg).textContent = content;
+            $('#pvView', dlg).hidden = false;
+            $('#pvEditField', dlg).hidden = true;
+            btn.innerHTML = svg('edit') + '编辑';
+            toast('已保存');
+            loadFiles();
+          } catch (e) { if (activeDialog === dlg) toast(e.message); }
+          finally { btn.disabled = false; }
+        };
+        $('#pvClose', dlg).onclick = function () { dlg.dismiss(null); };
+      },
+    });
   }
 
   // ---------- 设置视图 ----------
@@ -1089,7 +1298,7 @@ export function uiApp() {
         var r = await api('settings', { settings: payload });
         S.settings = r.settings;
         toast('设置已保存');
-        if (S.tab === 'settings') renderSettings(pane);
+        if (S.tab === 'settings') { renderSettings(pane); enter(pane); $('#saveSet').focus(); }
       } catch (e) { toast(e.message); }
     };
   }
