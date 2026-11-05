@@ -10,7 +10,8 @@ export function uiApp() {
     authed: false, hasPassword: true,
     settings: null, defaults: {},
     embedded: EMBEDDED, models: [], defaultModel: '',
-    sessions: [], tab: 'chat',
+    sessions: [], sessionsLoading: false, sessionsError: '', tab: 'chat',
+    sessCollapsed: false,
     cur: null, // 当前会话 { id, ws, wsOk, busy, streamEl, toolCard, history }
     files: [],
   };
@@ -122,9 +123,65 @@ export function uiApp() {
     applyTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
   }
 
+  // ---------- 抽屉 / 桌面会话列 ----------
+
+  var mobileDrawers = window.matchMedia && window.matchMedia('(max-width: 840px)');
+  try { S.sessCollapsed = localStorage.getItem('agent-sessions-collapsed') === '1'; } catch (e) { /* 隐身模式 */ }
+
+  function setDrawer(name) {
+    document.body.classList.toggle('nav-open', name === 'nav');
+    document.body.classList.toggle('sess-open', name === 'sessions' && S.tab === 'chat');
+    syncDrawers();
+  }
+
+  function syncDrawers() {
+    var mobile = mobileDrawers && mobileDrawers.matches;
+    var navOpen = document.body.classList.contains('nav-open');
+    var sessOpen = document.body.classList.contains('sess-open');
+    document.body.classList.toggle('sess-collapsed', S.sessCollapsed);
+    var rail = $('.rail');
+    var col = $('#sesscol');
+    if (rail) rail.inert = Boolean(mobile && !navOpen);
+    if (col) {
+      col.hidden = S.tab !== 'chat';
+      col.inert = S.tab !== 'chat' || (mobile ? !sessOpen : S.sessCollapsed);
+    }
+    var menu = $('#menuBtn');
+    if (menu) menu.setAttribute('aria-expanded', String(Boolean(mobile && navOpen)));
+    var btn = $('#sessBtn');
+    var expanded = mobile ? sessOpen : !S.sessCollapsed;
+    if (btn) {
+      btn.setAttribute('aria-expanded', String(S.tab === 'chat' && expanded));
+      btn.setAttribute('aria-label', expanded ? '收起会话列表' : '展开会话列表');
+      btn.title = expanded ? '收起会话列表' : '展开会话列表';
+    }
+    var collapse = $('#collapseSess');
+    if (collapse) {
+      collapse.setAttribute('aria-label', mobile ? '关闭会话列表' : '收起会话列表');
+      collapse.title = mobile ? '关闭会话列表' : '收起会话列表';
+    }
+  }
+
+  function toggleSessions() {
+    if (S.tab !== 'chat') return;
+    if (mobileDrawers && mobileDrawers.matches) {
+      setDrawer(document.body.classList.contains('sess-open') ? '' : 'sessions');
+    } else {
+      S.sessCollapsed = !S.sessCollapsed;
+      try { localStorage.setItem('agent-sessions-collapsed', S.sessCollapsed ? '1' : '0'); } catch (e) { /* 隐身模式 */ }
+      setDrawer('');
+    }
+  }
+  if (mobileDrawers && mobileDrawers.addEventListener) mobileDrawers.addEventListener('change', function () { setDrawer(''); });
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape') setDrawer(''); });
+
   // ---------- 登录 ----------
 
   function renderLogin() {
+    closeWs();
+    S.cur = null;
+    setDrawer('');
+    document.body.classList.remove('view-chat');
     root.innerHTML =
       '<div class="login"><div class="card elev">' +
       '<div class="logo">' + svg('bolt') + '</div>' +
@@ -158,10 +215,13 @@ export function uiApp() {
   ];
 
   function render() {
+    if (!S.authed) { renderLogin(); return; }
+    closeWs();
+    if (S.cur) S.cur = { id: S.cur.id };
     root.innerHTML =
       '<header class="topbar">' +
       '<button class="icon menubtn" id="menuBtn" aria-label="打开菜单">' + svg('menu') + '</button>' +
-      '<button class="icon sessbtn" id="sessBtn" aria-label="会话列表">' + svg('list') + '</button>' +
+      '<button class="icon sessbtn" id="sessBtn" aria-label="会话列表" aria-controls="sesscol">' + svg('list') + '</button>' +
       '<div class="brand"><span class="mark">' + svg('bolt') + '</span><b>Agent Workspace</b></div>' +
       '<span class="spacer"></span>' +
       '<span class="chip" id="wsState" style="display:none"></span>' +
@@ -176,6 +236,14 @@ export function uiApp() {
         return '<button class="navitem" data-tab="' + t.id + '"><span class="pill">' + svg(t.icon) + '</span><span class="rl">' + t.label + '</span></button>';
       }).join('') +
       '</nav>' +
+      '<aside class="sesscol" id="sesscol" hidden>' +
+      '<div class="sesshead"><span class="t">会话</span>' +
+      '<button class="icon" id="newSess" aria-label="新建会话">' + svg('plus') + '</button>' +
+      '<button class="icon" id="refreshSess" aria-label="刷新会话列表">' + svg('refresh') + '</button>' +
+      '<button class="icon" id="collapseSess" aria-label="收起会话列表">' + svg('back') + '</button>' +
+      '</div>' +
+      '<div class="sesslist" id="sesslist"></div>' +
+      '</aside>' +
       '<main><div id="pane" class="enter"></div></main>' +
       '</div>' +
       '<div class="scrim" id="scrim"></div>';
@@ -190,9 +258,18 @@ export function uiApp() {
       S.authed = false;
       renderLogin();
     };
-    $('#menuBtn').onclick = function () { document.body.classList.toggle('nav-open'); };
-    $('#sessBtn').onclick = function () { document.body.classList.toggle('sess-open'); };
-    $('#scrim').onclick = function () { document.body.classList.remove('nav-open'); document.body.classList.remove('sess-open'); };
+    $('#menuBtn').onclick = function () { setDrawer(document.body.classList.contains('nav-open') ? '' : 'nav'); };
+    $('#sessBtn').onclick = toggleSessions;
+    $('#collapseSess').onclick = toggleSessions;
+    $('#scrim').onclick = function () { setDrawer(''); };
+    $('#newSess').onclick = async function () {
+      try {
+        var r = await api('sessions', {});
+        await loadSessions();
+        if (S.tab === 'chat') { setDrawer(''); openSession(r.id); }
+      } catch (e) { toast(e.message); }
+    };
+    $('#refreshSess').onclick = function () { loadSessions(); };
     if (EMBEDDED) $('#backBtn').onclick = function () { location.href = '/admin'; };
 
     var btns = root.querySelectorAll('.navitem[data-tab]');
@@ -209,12 +286,15 @@ export function uiApp() {
     for (var i = 0; i < btns.length; i++) {
       btns[i].setAttribute('aria-selected', btns[i].dataset.tab === tab ? 'true' : 'false');
     }
-    document.body.classList.remove('nav-open');
   }
 
   function showTab(tab) {
+    // 切页前断开实时通道、释放 DOM 引用；保留 id 供返回时重载。
+    closeWs();
+    if (S.cur) S.cur = { id: S.cur.id };
     S.tab = tab;
     markSelected(tab);
+    setDrawer('');
     // 会话视图独占视口、禁止页面级滚动（否则会在页面下方拖出大片空白）
     document.body.classList.toggle('view-chat', tab === 'chat');
     var mainEl = document.querySelector('main');
@@ -231,13 +311,6 @@ export function uiApp() {
   function renderChat(pane) {
     pane.innerHTML =
       '<div class="chatwrap">' +
-      '<aside class="sesscol" id="sesscol">' +
-      '<div class="sesshead"><span class="t">会话</span>' +
-      '<button class="icon" id="newSess" aria-label="新建会话">' + svg('plus') + '</button>' +
-      '<button class="icon" id="refreshSess" aria-label="刷新会话列表">' + svg('refresh') + '</button>' +
-      '</div>' +
-      '<div class="sesslist" id="sesslist"></div>' +
-      '</aside>' +
       '<section class="chatcol">' +
       '<div class="msgs" id="msgs"><div class="inner" id="msglist"></div></div>' +
       '<div class="composer"><div class="taskchips" id="sessUsage"></div><div class="taskchips" id="taskchips"></div>' +
@@ -250,14 +323,6 @@ export function uiApp() {
       '</section>' +
       '</div>';
 
-    $('#newSess').onclick = async function () {
-      try {
-        var r = await api('sessions', {});
-        await loadSessions();
-        openSession(r.id);
-      } catch (e) { toast(e.message); }
-    };
-    $('#refreshSess').onclick = function () { loadSessions(); };
     $('#sendBtn').onclick = sendCurrent;
     var ta = $('#input');
     ta.onkeydown = function (e) {
@@ -271,39 +336,58 @@ export function uiApp() {
       ta.style.height = Math.min(180, ta.scrollHeight) + 'px';
     };
 
-    paintSessions();
-    if (S.sessions.length && !S.cur) openSession(S.sessions[0].id);
-    else if (S.cur) { paintSessions(); }
+    if (S.sessions.length || S.cur) paintSessions();
+    if (S.cur) openSession(S.cur.id);
+    loadSessions().then(function (loaded) {
+      if (loaded && S.tab === 'chat' && !S.cur && S.sessions.length) openSession(S.sessions[0].id);
+    });
   }
 
+  var sessionsRequest = 0;
   async function loadSessions() {
+    var request = ++sessionsRequest;
+    S.sessionsLoading = true;
+    paintSessions();
     try {
       var r = await api('sessions');
-      S.sessions = r.sessions || [];
-      paintSessions();
-    } catch (e) { /* 未登录等，render 会处理 */ }
+      if (request !== sessionsRequest) return false;
+      if (!r || !Array.isArray(r.sessions)) throw new Error('会话列表响应无效');
+      S.sessions = r.sessions;
+      S.sessionsError = '';
+      return true;
+    } catch (e) {
+      if (request === sessionsRequest) S.sessionsError = e.message;
+      return false;
+    } finally {
+      if (request === sessionsRequest) { S.sessionsLoading = false; paintSessions(); }
+    }
   }
 
   function paintSessions() {
     var list = $('#sesslist');
     if (!list) return;
-    if (!S.sessions.length) {
-      list.innerHTML = '<div class="sessempty">还没有会话。<br>点右上角 + 新建一个。</div>';
-      return;
-    }
-    list.innerHTML = S.sessions.map(function (s) {
+    var status = S.sessionsError
+      ? '<div class="sesserror" role="status">会话列表加载失败：' + esc(S.sessionsError) + '<br><button class="btn text small" id="retrySess">重试</button></div>'
+      : '';
+    list.innerHTML = status + (S.sessions.length ? S.sessions.map(function (s) {
       return '<div class="sessitem" role="button" data-id="' + esc(s.id) + '"' + (S.cur && S.cur.id === s.id ? ' aria-current="true"' : '') + '>' +
         '<span class="t">' + esc(s.title || '新会话') + '</span>' +
         '<span class="body-s muted">' + esc(when(s.updated_at)) + '</span>' +
         '<button class="icon del" data-del="' + esc(s.id) + '" aria-label="删除会话">' + svg('trash') + '</button>' +
         '</div>';
-    }).join('');
+    }).join('') : (status ? '' : '<div class="sessempty">' + (S.sessionsLoading ? '加载中…' : '还没有会话。<br>点右上角 + 新建一个。') + '</div>'));
+    var retry = $('#retrySess', list);
+    if (retry) retry.onclick = function () {
+      loadSessions().then(function (loaded) {
+        if (loaded && S.tab === 'chat' && !S.cur && S.sessions.length) openSession(S.sessions[0].id);
+      });
+    };
     var items = list.querySelectorAll('.sessitem');
     for (var i = 0; i < items.length; i++) {
       (function (el) {
         el.onclick = function (e) {
           if (e.target && e.target.closest && e.target.closest('[data-del]')) return;
-          document.body.classList.remove('sess-open'); // 移动端抽屉选中后自动收起
+          setDrawer(''); // 移动端抽屉选中后自动收起
           openSession(el.dataset.id);
         };
       })(items[i]);
@@ -329,27 +413,36 @@ export function uiApp() {
     }
   }
 
+  function isCurrent(cur) { return Boolean(cur && S.authed && S.tab === 'chat' && S.cur === cur); }
+
   async function openSession(id) {
+    if (!S.authed || S.tab !== 'chat') return;
     closeWs();
-    S.cur = { id: id, ws: null, wsOk: false, busy: false, streamEl: null, toolCard: null, toolStartedAt: 0, thinkEl: null, thinkStart: 0, thinkOpen: true, statusEl: null };
+    var cur = S.cur = { id: id, ws: null, wsOk: false, busy: false, loading: true, streamEl: null, toolCard: null, toolStartedAt: 0, thinkEl: null, thinkStart: 0, thinkOpen: true, statusEl: null };
     paintSessions();
     var list = $('#msglist');
     if (list) list.innerHTML = '';
+    $('#sendBtn').disabled = true;
     try {
       var r = await api('sessions/' + id + '/messages');
+      if (!isCurrent(cur)) return;
       var msgs = (r && r.messages) || [];
       for (var i = 0; i < msgs.length; i++) paintStored(msgs[i]);
       scrollBottom();
-    } catch (e) { toast(e.message); }
+    } catch (e) { if (isCurrent(cur)) toast(e.message); }
+    if (!isCurrent(cur)) return;
+    cur.loading = false;
+    $('#sendBtn').disabled = false;
     refreshTasks();
     refreshUsage();
     connectWs(id);
   }
 
   function refreshUsage() {
-    if (!S.cur) return;
-    api('sessions/' + S.cur.id + '/usage').then(function (r) {
-      paintSessionUsage((r && r.usage) || null);
+    var cur = S.cur;
+    if (!isCurrent(cur)) return;
+    api('sessions/' + cur.id + '/usage').then(function (r) {
+      if (isCurrent(cur)) paintSessionUsage((r && r.usage) || null);
     }).catch(function () { /* 忽略 */ });
   }
 
@@ -409,6 +502,8 @@ export function uiApp() {
   }
 
   function connectWs(id) {
+    var cur = S.cur;
+    if (!isCurrent(cur) || cur.id !== id) return;
     if (typeof WebSocket === 'undefined') { setWsState('REST 模式', ''); return; }
     var proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
     var ws;
@@ -418,39 +513,52 @@ export function uiApp() {
       setWsState('REST 模式', '');
       return;
     }
-    S.cur.ws = ws;
-    var alive = false;
-    ws.onopen = function () { alive = true; S.cur.wsOk = true; setWsState('已连接', 'ok'); };
+    cur.ws = ws;
+    ws.onopen = function () { if (!isCurrent(cur) || cur.ws !== ws) return; cur.wsOk = true; setWsState('已连接', 'ok'); };
     ws.onclose = function () {
-      if (S.cur && S.cur.ws === ws) {
-        S.cur.wsOk = false;
+      clearInterval(cur.wsTimer);
+      if (isCurrent(cur) && cur.ws === ws) {
+        cur.wsOk = false;
         setWsState('实时通道断开，用输入框仍可对话（REST）', 'err');
       }
     };
     ws.onerror = function () { /* onclose 会跟着来 */ };
     ws.onmessage = function (ev) {
+      if (!isCurrent(cur) || cur.ws !== ws) return;
       var data = null;
       try { data = JSON.parse(ev.data); } catch (e) { return; }
       handleEvent(data);
     };
     // 保活：浏览器侧定时 ping，服务端回 pong
-    var timer = setInterval(function () {
+    cur.wsTimer = setInterval(function () {
       if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'ping' }));
-      else clearInterval(timer);
+      else clearInterval(cur.wsTimer);
     }, 30000);
   }
 
   function closeWs() {
-    if (S.cur && S.cur.ws) {
-      try { S.cur.ws.close(); } catch (e) { /* 已经断了 */ }
-      S.cur.ws = null;
-      S.cur.wsOk = false;
+    var cur = S.cur;
+    if (cur) {
+      clearInterval(cur.wsTimer);
+      cur.wsTimer = null;
+      var ws = cur.ws;
+      cur.ws = null;
+      cur.wsOk = false;
+      if (ws) {
+        ws.onopen = ws.onmessage = ws.onclose = ws.onerror = null;
+        try { ws.close(); } catch (e) { /* 已经断了 */ }
+      }
     }
     setWsState('');
   }
 
   function handleEvent(e) {
-    if (e.type === 'hello') return;
+    if (!isCurrent(S.cur)) return;
+    if (e.type === 'hello') {
+      setBusy(Boolean(e.busy));
+      S.cur.reloadOnDone = Boolean(e.busy); // 重连途中可能漏过正文前缀，回合落盘后补全历史
+      return;
+    }
     if (e.type === 'pong') return;
     if (e.type === 'tasks') { paintTasks(e.tasks || []); return; }
     if (e.type === 'busy') { if (e.on) startStatus(); else endStatus(); setBusy(e.on); return; }
@@ -499,6 +607,7 @@ export function uiApp() {
       paintSessionUsage(e.sessionUsage || null);
       refreshTasks();
       loadSessions();
+      if (S.cur.reloadOnDone) openSession(S.cur.id);
       return;
     }
     if (e.type === 'files_changed') {
@@ -694,9 +803,10 @@ export function uiApp() {
   }
 
   function refreshTasks() {
-    if (!S.cur) return;
-    api('sessions/' + S.cur.id + '/tasks').then(function (r) {
-      paintTasks((r && r.tasks) || []);
+    var cur = S.cur;
+    if (!isCurrent(cur)) return;
+    api('sessions/' + cur.id + '/tasks').then(function (r) {
+      if (isCurrent(cur)) paintTasks((r && r.tasks) || []);
     }).catch(function () { /* 忽略 */ });
   }
 
@@ -711,7 +821,8 @@ export function uiApp() {
 
   async function sendCurrent() {
     var ta = $('#input');
-    if (!ta || !S.cur) return;
+    var cur = S.cur;
+    if (!ta || !isCurrent(cur) || cur.loading) return;
     var text = ta.value.trim();
     if (!text) return;
     if (S.cur.busy) {
@@ -731,12 +842,13 @@ export function uiApp() {
     }
     // REST 兜底：一次拿全部事件再回放
     try {
-      var r = await api('sessions/' + S.cur.id + '/message', { text: text });
+      var r = await api('sessions/' + cur.id + '/message', { text: text });
+      if (!isCurrent(cur)) return;
       var events = (r && r.events) || [];
       for (var i = 0; i < events.length; i++) handleEvent(events[i]);
       if (r && r.ok === false && r.error) addError(r.error);
     } catch (e) {
-      addError(e.message);
+      if (isCurrent(cur)) addError(e.message);
     }
   }
 
@@ -977,7 +1089,7 @@ export function uiApp() {
         var r = await api('settings', { settings: payload });
         S.settings = r.settings;
         toast('设置已保存');
-        renderSettings(pane);
+        if (S.tab === 'settings') renderSettings(pane);
       } catch (e) { toast(e.message); }
     };
   }

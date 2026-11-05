@@ -13,6 +13,7 @@ import { MD3_TOKENS_CSS } from './tokens.js';
 export const UI_CSS = MD3_TOKENS_CSS + `
 *,*::before,*::after{box-sizing:border-box}
 html,body{margin:0;padding:0}
+[hidden]{display:none!important}
 body{
   font-family:Roboto,"Roboto Flex","Noto Sans SC","PingFang SC","Microsoft YaHei",system-ui,-apple-system,"Segoe UI",sans-serif;
   background:var(--md-sys-color-surface);
@@ -337,7 +338,7 @@ pre.code{
 /* ---------- <=840px：侧栏变模态抽屉 ---------- */
 @media(max-width:840px){
   .menubtn{display:grid}
-  body.nav-open .scrim{opacity:1;visibility:visible}
+  body.nav-open .scrim,body.sess-open .scrim{opacity:1;visibility:visible}
   .rail{
     position:fixed;left:0;top:0;bottom:0;z-index:40;
     width:min(300px,84vw);flex-basis:auto;
@@ -345,10 +346,10 @@ pre.code{
     background:var(--md-sys-color-surface-container-low);
     border-radius:0 var(--md-shape-l) var(--md-shape-l) 0;box-shadow:var(--md-elev-3);
     overflow-y:auto;overscroll-behavior:contain;
-    transform:translateX(-104%);
-    transition:transform var(--dur-l) var(--ease-emph);
+    transform:translateX(-104%);visibility:hidden;
+    transition:transform var(--dur-l) var(--ease-emph),visibility var(--dur-l) var(--ease-emph);
   }
-  body.nav-open .rail{transform:none}
+  body.nav-open .rail{transform:none;visibility:visible}
   .drawerhead{
     display:flex;align-items:center;gap:8px;padding:4px 4px 12px 12px;
     color:var(--md-sys-color-on-surface-variant);
@@ -426,11 +427,15 @@ pre.code{
 
 /* ---------- 会话视图：双栏 ---------- */
 .chatwrap{display:flex;min-height:calc(100vh - 64px);height:calc(100vh - 64px)}
+/* 两个抽屉同为 .shell 的直接子元素，不放入有动画/裁剪的 main/#pane。 */
 .sesscol{
-  width:272px;flex:0 0 272px;display:flex;flex-direction:column;min-height:0;
+  width:272px;flex:0 0 272px;display:flex;flex-direction:column;min-height:0;height:calc(100vh - 64px);
   border-right:1px solid var(--md-sys-color-outline-variant);background:var(--md-sys-color-surface-container-low);
 }
-.sesscol .sesshead{display:flex;align-items:center;gap:8px;padding:12px 12px 8px}
+@media(min-width:841px){
+  body.sess-collapsed .sesscol{display:none}
+}
+.sesscol .sesshead{display:flex;align-items:center;gap:4px;padding:12px 8px 8px}
 .sesscol .sesshead .t{flex:1;font-size:13px;font-weight:500;letter-spacing:.3px;color:var(--md-sys-color-on-surface-variant)}
 .sesslist{flex:1;overflow-y:auto;padding:0 8px 12px;display:flex;flex-direction:column;gap:4px}
 .sessitem{
@@ -445,6 +450,7 @@ pre.code{
 .sessitem:hover .del,.sessitem[aria-current=true] .del{visibility:visible}
 .sessitem[aria-current=true]{background:var(--md-sys-color-secondary-container);color:var(--md-sys-color-on-secondary-container)}
 .sessempty{padding:24px 16px;color:var(--md-sys-color-on-surface-variant);font-size:13px;text-align:center}
+.sesserror{padding:12px;color:var(--md-sys-color-on-surface-variant);font-size:12px;border:1px solid var(--md-sys-color-outline-variant);border-radius:var(--md-shape-m)}
 
 .chatcol{flex:1;display:flex;flex-direction:column;min-width:0;min-height:0;position:relative}
 .msgs{flex:1;overflow-y:auto;padding:20px 24px 12px;scroll-behavior:smooth}
@@ -506,12 +512,13 @@ pre.code{
 @media(max-width:840px){
   .chatwrap{height:auto;min-height:calc(100vh - 64px)}
   .sesscol{
-    position:fixed;left:0;top:0;bottom:0;z-index:40;width:min(300px,84vw);flex-basis:auto;
+    position:fixed;left:0;top:0;bottom:0;z-index:40;width:min(300px,84vw);flex-basis:auto;height:auto;
     border-right:0;border-radius:0 var(--md-shape-l) var(--md-shape-l) 0;box-shadow:var(--md-elev-3);
-    transform:translateX(-104%);transition:transform var(--dur-l) var(--ease-emph);
+    transform:translateX(-104%);visibility:hidden;
+    transition:transform var(--dur-l) var(--ease-emph),visibility var(--dur-l) var(--ease-emph);
     overscroll-behavior:contain;
   }
-  body.sess-open .sesscol{transform:none}
+  body.sess-open .sesscol{transform:none;visibility:visible}
   body.sess-open{overflow:hidden}
   .msgs{padding:16px 14px 8px}
   .composer{padding:8px 14px 12px}
@@ -542,12 +549,10 @@ pre.code{
 /* 下载链接按钮（<a> 版 small） */
 a.btn.small{min-height:32px;height:32px;padding:0 14px;font-size:13px;text-decoration:none;justify-content:center}
 
-/* ---------- 移动端会话列表入口 ---------- */
-/* 桌面端会话列常驻，按钮隐藏；≤840px 会话列变抽屉，顶栏出现打开按钮 */
+/* ---------- 会话列表入口 ---------- */
+/* 桌面可折叠，顶栏按钮始终可重新展开；移动端只控制抽屉，不改桌面偏好。 */
 .topbar .sessbtn{display:none}
-@media(max-width:840px){
-  .topbar .sessbtn{display:grid}
-}
+body.view-chat .topbar .sessbtn{display:grid}
 
 /* ---------- assistant 消息内的 markdown ---------- */
 .msg.assistant h1,.msg.assistant h2,.msg.assistant h3,.msg.assistant h4{margin:14px 0 6px;line-height:1.35}
