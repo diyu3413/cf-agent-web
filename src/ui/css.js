@@ -323,6 +323,8 @@ dialog .actions{display:flex;justify-content:flex-end;gap:8px;margin-top:24px;fl
   max-width:min(560px,calc(100vw - 32px));
   transition:opacity var(--dur-m) var(--ease-std),transform var(--dur-m) var(--ease-emph-out),visibility var(--dur-m) var(--ease-std);
 }
+/* 16px 入场位移也不能碰到 composer；高度由 ResizeObserver 跟随多行/chips 更新。 */
+body.view-chat #snack{bottom:calc(var(--composer-height,280px) + 24px)}
 #snack.on{opacity:1;visibility:visible;transform:translate(-50%,0)}
 #snack.leaving,.dialog-status.leaving{animation:fadeOut var(--dur-s) var(--ease-std) forwards}
 #snack .snack-text{flex:1;min-width:0}

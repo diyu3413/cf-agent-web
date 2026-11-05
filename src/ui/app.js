@@ -8,7 +8,7 @@
 export function uiApp() {
   var S = {
     authed: false, hasPassword: true,
-    settings: null, defaults: {},
+    settings: null, settingsLoading: true, settingsError: '', defaults: {},
     embedded: EMBEDDED, models: [], defaultModel: '',
     sessions: [], sessionsLoading: false, sessionsError: '', tab: 'chat',
     sessCollapsed: false,
@@ -86,6 +86,7 @@ export function uiApp() {
   var dialogSeq = 0;
   var viewSeq = 0;
   var previewRequest = 0;
+  var composerObserver = null;
   var reducedMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)');
 
   // CSS 令牌决定等待时长；没有动画/减少动态效果时立即完成。
@@ -334,6 +335,7 @@ export function uiApp() {
 
   function renderLogin() {
     viewSeq++;
+    if (composerObserver) { composerObserver.disconnect(); composerObserver = null; }
     if (activeDialog) activeDialog.dismiss(null, true, false);
     closeWs();
     S.cur = null;
@@ -421,11 +423,25 @@ export function uiApp() {
     $('#collapseSess').onclick = toggleSessions;
     $('#scrim').onclick = function () { setDrawer(''); };
     $('#newSess').onclick = async function () {
+      var btn = this, epoch = viewSeq;
+      if (btn.disabled) return;
+      btn.disabled = true;
       try {
         var r = await api('sessions', {});
-        await loadSessions();
-        if (S.tab === 'chat') { setDrawer(''); openSession(r.id); }
+        if (!r || !r.id) throw new Error('新建会话响应无效');
+        if (!S.authed) return;
+        // POST 已创建空会话，不再等待列表 GET；旧列表响应不能移除新行。
+        sessionsRequest++;
+        S.sessionsLoading = false;
+        var now = Date.now();
+        S.sessions = [{ id: r.id, title: '', created_at: now, updated_at: now }].concat(S.sessions.filter(function (s) { return s.id !== r.id; }));
+        paintSessions();
+        if (epoch === viewSeq && S.tab === 'chat') {
+          openSession(r.id);
+          $('#sesslist').scrollTop = 0;
+        }
       } catch (e) { toast(e.message); }
+      finally { btn.disabled = false; }
     };
     $('#refreshSess').onclick = function () { loadSessions(); };
     if (EMBEDDED) $('#backBtn').onclick = function () { location.href = '/admin'; };
@@ -448,6 +464,7 @@ export function uiApp() {
 
   function showTab(tab) {
     viewSeq++;
+    if (composerObserver) { composerObserver.disconnect(); composerObserver = null; }
     if (activeDialog) activeDialog.dismiss(null, true, false);
     // 切页前断开实时通道、释放 DOM 引用；保留 id 供返回时重载。
     closeWs();
@@ -495,7 +512,19 @@ export function uiApp() {
     ta.oninput = function () {
       ta.style.height = 'auto';
       ta.style.height = Math.min(180, ta.scrollHeight) + 'px';
+      syncComposerHeight();
     };
+
+    // 提示条留在未变换的根层；随输入框/任务 chips 的实际高度避让。
+    function syncComposerHeight() {
+      var composer = $('.composer', pane);
+      if (composer) document.body.style.setProperty('--composer-height', composer.offsetHeight + 'px');
+    }
+    syncComposerHeight();
+    if (typeof ResizeObserver !== 'undefined') {
+      composerObserver = new ResizeObserver(syncComposerHeight);
+      composerObserver.observe($('.composer', pane));
+    }
 
     if (S.sessions.length || S.cur) paintSessions();
     if (S.cur) openSession(S.cur.id);
@@ -1239,6 +1268,12 @@ export function uiApp() {
   }
 
   function renderSettings(pane) {
+    if (S.settingsLoading || S.settingsError) {
+      pane.innerHTML = '<div class="head"><h2 class="headline-s">设置</h2></div><div class="empty" role="status">' +
+        (S.settingsError ? '设置加载失败：' + esc(S.settingsError) + '<br><button class="btn text" id="retryState">重试</button>' : '加载中…') + '</div>';
+      if (S.settingsError) $('#retryState').onclick = loadState;
+      return;
+    }
     var s = S.settings || {};
     // 内嵌模式：模型来自所在网关的「模型链」，无需地址密钥；独立模式：手填网关三件套
     var gatewayCard = S.embedded
@@ -1305,22 +1340,40 @@ export function uiApp() {
 
   // ---------- 启动 ----------
 
+  async function loadState() {
+    S.settingsLoading = true;
+    S.settingsError = '';
+    if (S.tab === 'settings') renderSettings($('#pane'));
+    try {
+      var st = await api('state');
+      if (!st || !st.settings) throw new Error('设置响应无效');
+      if (!S.authed) return;
+      S.settings = st.settings;
+      S.defaults = st.defaults || {};
+      // 列表由 Chat 的独立请求填充；迟到的 state 不覆盖新建/选中会话。
+      S.embedded = Boolean(st.embedded);
+      S.models = st.models || [];
+      S.defaultModel = st.defaultModel || '';
+    } catch (e) { S.settingsError = e.message; }
+    finally {
+      S.settingsLoading = false;
+      if (S.authed && S.tab === 'settings') renderSettings($('#pane'));
+    }
+  }
+
   async function boot() {
+    root.innerHTML = '<div class="login"><div class="card"><h1 class="headline-s">Agent Workspace</h1><p class="body-m muted" role="status">加载中…</p></div></div>';
     try {
       var s = await api('session');
+      if (!s || typeof s.authed !== 'boolean') throw new Error('登录状态响应无效');
       S.authed = s.authed;
       S.hasPassword = s.hasPassword;
-      if (S.authed) {
-        var st = await api('state');
-        S.settings = st.settings;
-        S.defaults = st.defaults || {};
-        S.sessions = st.sessions || [];
-        S.embedded = Boolean(st.embedded);
-        S.models = st.models || [];
-        S.defaultModel = st.defaultModel || '';
-      }
-    } catch (e) { /* 未登录 */ }
-    if (S.authed) render();
+    } catch (e) {
+      root.innerHTML = '<div class="login"><div class="card"><h1 class="headline-s">Agent Workspace</h1><p class="body-m muted" role="status">加载失败：' + esc(e.message) + '</p><button class="btn" id="retryBoot">重试</button></div></div>';
+      $('#retryBoot').onclick = boot;
+      return;
+    }
+    if (S.authed) { render(); loadState(); }
     else renderLogin();
   }
 

@@ -59,7 +59,7 @@ function makeEl(tag) {
     tagName: (tag || 'div').toUpperCase(),
     children: [],
     dataset: {},
-    style: {},
+    style: { setProperty(k, v) { this[k] = v; } },
     value: '',
     textContent: '',
     className: '',
@@ -78,6 +78,7 @@ function makeEl(tag) {
       },
     },
     offsetWidth: 1,
+    offsetHeight: 100,
     isConnected: true,
     tabIndex: 0,
     hidden: false,
@@ -226,7 +227,21 @@ const STATE = {
   sessions: [{ id: 's1', title: '测试会话', created_at: NOW, updated_at: NOW }],
 };
 
+const observers = [];
+globalThis.ResizeObserver = class {
+  constructor(fn) { this.fn = fn; observers.push(this); }
+  observe(el) { this.el = el; }
+  disconnect() { this.disconnected = true; }
+};
+
 let sessionsFail = false;
+let holdSession = null;
+let holdState = null;
+let stateFail = false;
+let holdSessions = null;
+let holdCreate = null;
+let createFail = false;
+let newId = 0;
 let sessionsData = null;
 let holdHistory = null;
 let holdTasks = null;
@@ -242,13 +257,25 @@ globalThis.fetch = async (url, options = {}) => {
   if (options.method) writes.push({ url: String(url), ...options });
   const u = String(url);
   requests.push(u);
-  if (u.endsWith('/api/session')) return jsonRes({ authed: true, hasPassword: true });
+  if (u.endsWith('/api/session')) return holdSession ? holdSession.promise : jsonRes({ authed: true, hasPassword: true });
   if (u.endsWith('/api/sessions')) {
+    if (options.method === 'POST') {
+      if (createFail) return jsonRes({ error: { message: '新建失败测试' } }, 503);
+      if (holdCreate) return holdCreate.promise;
+      const id = 'new' + (++newId);
+      sessionsData = [{ id, title: '', updated_at: NOW }, ...(sessionsData || STATE.sessions)];
+      return jsonRes({ ok: true, id });
+    }
+    if (holdSessions) return holdSessions.promise.then((r) => r.clone());
     if (sessionsFail) return jsonRes({ error: { message: 'D1 暂不可用' } }, 503);
     return jsonRes({ sessions: sessionsData || STATE.sessions });
   }
   if (u.endsWith('/api/settings')) return holdSettings ? holdSettings.promise : jsonRes({ settings: STATE.settings });
-  if (u.includes('/api/state')) return jsonRes(STATE);
+  if (u.includes('/api/state')) return holdState ? holdState.promise : stateFail ? jsonRes({ error: { message: '设置失败测试' } }, 503) : jsonRes(STATE);
+  if (/\/api\/sessions\/new\d+\/message$/.test(u)) {
+    sessionsData = sessionsData.map((s) => s.id === u.split('/').at(-2) ? { ...s, title: '首条消息标题' } : s);
+    return jsonRes({ events: [{ type: 'turn_done' }] });
+  }
   if (u.endsWith('/api/sessions/s1/message') && holdMessage) return holdMessage.promise;
   if (u.endsWith('/api/sessions/s1/usage')) return holdUsage ? holdUsage.promise : jsonRes({ usage: { prompt: 10, completion: 5 } });
   if (u.match(/\/api\/sessions\/s1\/messages/)) {
@@ -304,8 +331,25 @@ pick('#root').querySelectorAll = (sel) => {
 };
 
 console.log('\n[1] 启动');
+holdSession = deferred();
+holdState = deferred();
+holdSessions = deferred();
 uiApp();
+ok('认证请求未返回时已有可见加载骨架', pick('#root').innerHTML.includes('Agent Workspace') && pick('#root').innerHTML.includes('加载中'));
+holdSession.resolve(jsonRes({ authed: true, hasPassword: true }));
+holdSession = null;
+await settle();
+ok('state/列表未返回时外壳与 composer 已渲染', pick('#root').innerHTML.includes('class="topbar"') && pick('#pane').innerHTML.includes('id="input"'));
+ok('列表未返回时显示加载中而非空会话', pick('#sesslist').innerHTML.includes('加载中') && !pick('#sesslist').innerHTML.includes('还没有会话'));
+navBtns[2].onclick();
+ok('state 未返回时设置显示加载状态而非可保存空表单', pick('#pane').innerHTML.includes('加载中') && !pick('#pane').innerHTML.includes('id="saveSet"'));
+navBtns[0].onclick();
+holdState.resolve(jsonRes(STATE));
+holdState = null;
+holdSessions.resolve(jsonRes({ sessions: STATE.sessions }));
+holdSessions = null;
 await new Promise((r) => setTimeout(r, 30));
+ok('迟到 state 不覆盖 Chat/选中会话', pick('#pane').innerHTML.includes('id="input"') && pick('#sesslist').innerHTML.includes('data-id="s1" aria-current="true"'));
 ok('渲染出了内容', captured.length > 0);
 const shellHtml = captured.find((h) => h.includes('class="topbar"'));
 ok('外壳（顶栏+导航）渲染出来了', Boolean(shellHtml));
@@ -699,6 +743,87 @@ ok('pane 使用无 transform 的 fadeIn（静态 CSS）', css.includes('#pane.en
 ok('dialog scrim / exit 使用现有时长令牌（静态 CSS）', css.includes('dialog::backdrop{background:var(--md-sys-color-scrim)') && css.includes('dialog.leaving{animation:dlgOut var(--dur-s)'));
 ok('reduced-motion 去除延迟及滚动动画（静态 CSS）', css.includes('animation-delay:0ms!important') && css.includes('scroll-behavior:auto!important'));
 ok('没有原生 alert/confirm/prompt 调用（静态源码）', !/\b(?:alert|confirm|prompt)\s*\(/.test(src));
+navBtns[2].onclick();
+
+console.log('\n[8] 新建立即可见 / 首条消息去重 / 非阻塞加载');
+motionMs = 0;
+reducedMedia.matches = false;
+delete globalThis.WebSocket;
+navBtns[0].onclick();
+await settle();
+const savedSessions = [...sessionsData];
+const savedSelection = pick('#sesslist').querySelectorAll('.sessitem').find((el) => el.attrs['aria-current'] === 'true').dataset.id;
+holdSessions = deferred();
+const staleSessions = holdSessions;
+pick('#refreshSess').onclick();
+const beforeCreate = writes.filter((w) => w.url.endsWith('/api/sessions') && w.method === 'POST').length;
+const creation = pick('#newSess').onclick();
+pick('#newSess').onclick();
+await creation;
+await settle();
+const newRow = pick('#sesslist').querySelectorAll('.sessitem')[0];
+ok('新建不等待列表 GET，立即在顶部且选中', newRow.dataset.id === 'new1' && newRow.attrs['aria-current'] === 'true' && pick('#sesslist').scrollTop === 0);
+ok('重复点击待定新建仅发一次 POST', writes.filter((w) => w.url.endsWith('/api/sessions') && w.method === 'POST').length === beforeCreate + 1);
+staleSessions.resolve(jsonRes({ sessions: savedSessions }));
+holdSessions = null;
+await settle();
+ok('早于创建的旧列表响应不移除/取消选中新行', pick('#sesslist').querySelectorAll('.sessitem')[0] === newRow && newRow.attrs['aria-current'] === 'true');
+navBtns[2].onclick();
+navBtns[0].onclick();
+await settle();
+ok('发送前空会话从设置返回仍选中且只有一个条目', pick('#sesslist').querySelectorAll('.sessitem').filter((el) => el.dataset.id === 'new1').length === 1 && newRow.attrs['aria-current'] === 'true');
+pick('#input').value = '首条消息';
+await pick('#sendBtn').onclick();
+await settle();
+ok('发送首条消息沿用已创建 id，不重复 POST 创建', writes.some((w) => w.url.endsWith('/api/sessions/new1/message')) && writes.filter((w) => w.url.endsWith('/api/sessions') && w.method === 'POST').length === beforeCreate + 1);
+ok('发送后列表仅一个同 id 行并原地更新标题/选中', pick('#sesslist').querySelectorAll('.sessitem').filter((el) => el.dataset.id === 'new1').length === 1 && newRow.querySelector('.t').textContent === '首条消息标题' && newRow.attrs['aria-current'] === 'true');
+navBtns[2].onclick();
+navBtns[0].onclick();
+await settle();
+ok('发送后的新会话设置返回仍恢复其选中态', pick('#sesslist').querySelectorAll('.sessitem')[0].attrs['aria-current'] === 'true');
+const activeObserver = observers.at(-1);
+activeObserver.el.offsetHeight = 260;
+activeObserver.fn();
+ok('composer 高度变化更新 snackbar 避让高度', document.body.style['--composer-height'] === '260px');
+ok('snackbar 避让含入场位移且保留 MD3 动效（静态 CSS）', css.includes('body.view-chat #snack{bottom:calc(var(--composer-height,280px) + 24px)}') && css.includes('transform:translate(-50%,16px)') && css.includes('transform var(--dur-m) var(--ease-emph-out)'));
+navBtns[2].onclick();
+ok('离开 Chat 释放 composer 观察器', activeObserver.disconnected);
+navBtns[0].onclick();
+await settle();
+createFail = true;
+const rowsBeforeFailure = pick('#sesslist').querySelectorAll('.sessitem').length;
+await pick('#newSess').onclick();
+ok('创建失败无幽灵行，解除按钮禁用并保留错误', pick('#sesslist').querySelectorAll('.sessitem').length === rowsBeforeFailure && !pick('#newSess').disabled && snack.querySelector('.snack-text').textContent === '新建失败测试');
+createFail = false;
+holdCreate = deferred();
+const pendingCreation = pick('#newSess').onclick();
+navBtns[2].onclick();
+holdCreate.resolve(jsonRes({ id: 'new2' }));
+holdCreate = null;
+await pendingCreation;
+navBtns[0].onclick();
+await settle();
+ok('离开 Chat 后迟到新建不抢占返回的选中会话', pick('#sesslist').querySelectorAll('.sessitem').find((el) => el.dataset.id === 'new1').attrs['aria-current'] === 'true');
+// 启动失败必须可重试；state 失败不能让用户保存空设置。
+holdSession = deferred();
+uiApp();
+holdSession.resolve(jsonRes({ error: { message: '认证网络失败测试' } }, 503));
+holdSession = null;
+await settle();
+ok('认证加载失败保留重试而非伪装未登录', pick('#root').innerHTML.includes('id="retryBoot"') && pick('#root').innerHTML.includes('认证网络失败测试'));
+stateFail = true;
+await pick('#retryBoot').onclick();
+await settle();
+navBtns[2].onclick();
+ok('state 加载失败显示错误与重试，不可保存空值', pick('#pane').innerHTML.includes('id="retryState"') && pick('#pane').innerHTML.includes('设置失败测试') && !pick('#pane').innerHTML.includes('id="saveSet"'));
+stateFail = false;
+await pick('#retryState').onclick();
+ok('state 重试成功填充可保存设置', pick('#pane').innerHTML.includes('id="saveSet"'));
+sessionsData = savedSessions;
+navBtns[0].onclick();
+await settle();
+pick('#sesslist').querySelectorAll('.sessitem').find((el) => el.dataset.id === savedSelection).onclick({ target: {} });
+await settle();
 navBtns[2].onclick();
 
 console.log('\n' + (fail ? '❌' : '✅') + ' 通过 ' + pass + ' 项，失败 ' + fail + ' 项\n');
