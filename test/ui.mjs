@@ -270,6 +270,15 @@ globalThis.fetch = async (url, options = {}) => {
     if (sessionsFail) return jsonRes({ error: { message: 'D1 暂不可用' } }, 503);
     return jsonRes({ sessions: sessionsData || STATE.sessions });
   }
+  if (/\/api\/sessions\/[A-Za-z0-9_-]+$/.test(u) && options.method === 'PATCH') {
+    let body = {};
+    try { body = JSON.parse(options.body || '{}'); } catch { body = {}; }
+    const id = u.split('/').at(-1);
+    const title = String(body.title || '').trim().slice(0, 60);
+    if (!title) return jsonRes({ error: { message: '会话名不能为空。' } }, 400);
+    sessionsData = (sessionsData || STATE.sessions).map((s) => s.id === id ? { ...s, title, updated_at: NOW } : s);
+    return jsonRes({ ok: true, title });
+  }
   if (u.endsWith('/api/settings')) return holdSettings ? holdSettings.promise : jsonRes({ settings: STATE.settings });
   if (u.includes('/api/state')) return holdState ? holdState.promise : stateFail ? jsonRes({ error: { message: '设置失败测试' } }, 503) : jsonRes(STATE);
   if (/\/api\/sessions\/new\d+\/message$/.test(u)) {
@@ -354,7 +363,8 @@ ok('渲染出了内容', captured.length > 0);
 const shellHtml = captured.find((h) => h.includes('class="topbar"'));
 ok('外壳（顶栏+导航）渲染出来了', Boolean(shellHtml));
 if (shellHtml) {
-  ok('有三个导航项', (shellHtml.match(/class="navitem"/g) || []).length === 3);
+  // railfoot 的会话入口也是 .navitem 但无 data-tab，导航项按 data-tab 计数
+  ok('有三个导航项', (shellHtml.match(/class="navitem" data-tab="/g) || []).length === 3);
   ok('顶栏有主题切换和退出', shellHtml.includes('id="themeBtn"') && shellHtml.includes('id="logoutBtn"'));
   const err = checkBalance(shellHtml);
   ok('外壳标签配对正确', !err, err);
@@ -391,9 +401,12 @@ ok('设置页有部署对应的模型设置', embedded
 ok('设置页有定时任务开关', (seen.settings || '').includes('scheduleEnabled'));
 ok('设置页有附加系统提示', (seen.settings || '').includes('systemPrompt'));
 const css = readFileSync(join(dirname(process.argv[2] || join(here, '../src/ui/app.js')), 'css.js'), 'utf8');
-ok('两种抽屉都显示同一遮罩（静态 CSS）', css.includes('body.nav-open .scrim,body.sess-open .scrim{opacity:1;visibility:visible}'));
-ok('折叠样式仅限桌面（静态 CSS）', /@media\(min-width:841px\)\{\s*body\.sess-collapsed \.sesscol\{display:none\}/.test(css));
-ok('会话列表入口只在 Chat 可见（静态 CSS）', css.includes('.topbar .sessbtn{display:none}') && css.includes('body.view-chat .topbar .sessbtn{display:grid}'));
+ok('抽屉遮罩显示（静态 CSS）', css.includes('body.nav-open .scrim{opacity:1;visibility:visible}'));
+ok('折叠用负 margin 平滑过渡且仅限桌面（静态 CSS）', /@media\(min-width:841px\)\{\s*(?:\/\*[\s\S]*?\*\/\s*)?\.sesscol\{transition:margin-left[^}]*\}\s*body\.sess-collapsed \.sesscol\{margin-left:-272px;opacity:0;pointer-events:none\}/.test(css));
+ok('会话列表入口只在 Chat 可见、移动端并入抽屉（静态 CSS）',
+  css.includes('.topbar .sessbtn{display:none}') && !css.includes('body.view-chat .topbar .sessbtn{display:grid}')
+  && css.includes('body:not(.view-chat) .railfoot{display:none}')
+  && /@media\(max-width:840px\)\{\s*\.chatwrap\{height:auto;min-height:calc\(100vh - 64px\)\}\s*\.sesscol\{[^}]*position:static/.test(css));
 
 console.log('\n[4] 设置 → 会话：重载历史与列表');
 const beforeHistory = requests.filter((u) => u.endsWith('/messages')).length;
@@ -442,50 +455,69 @@ pick('#retrySess').onclick();
 await settle();
 ok('无缓存重试恢复列表和首个会话', messageText().includes('写好了。'));
 
-console.log('\n[5] 抽屉互斥 / 重置 / 桌面折叠');
-pick('#collapseSess').onclick();
-ok('桌面折叠列且持久化', document.body.classList.contains('sess-collapsed') && storage.get('agent-sessions-collapsed') === '1' && pick('#sesscol').inert);
-ok('顶栏保留可发现的展开入口', pick('#sessBtn').getAttribute('aria-expanded') === 'false' && pick('#sessBtn').title === '展开会话列表');
+console.log('\n[5] 抽屉重置 / 桌面折叠（默认折叠，桌面入口在左下角 railfoot；移动并入导航抽屉）');
+ok('默认折叠会话列且未写偏好', document.body.classList.contains('sess-collapsed') && storage.get('agent-sessions-collapsed') == null && pick('#sesscol').inert);
+ok('左下角保留可发现的展开入口', pick('#sessRail').getAttribute('aria-expanded') === 'false' && pick('#sessRail').title === '展开会话列表');
+pick('#sessRail').onclick();
+ok('桌面 railfoot 展开列并持久化', !document.body.classList.contains('sess-collapsed') && storage.get('agent-sessions-collapsed') === '0' && !pick('#sesscol').inert);
 navBtns[2].onclick();
-pick('#sessBtn').onclick();
-ok('设置页会话按钮不打开虚空抽屉', pick('#sesscol').hidden && !document.body.classList.contains('sess-open'));
+pick('#sessRail').onclick();
+ok('设置页 railfoot 不打开虚空抽屉', pick('#sesscol').hidden && !document.body.classList.contains('nav-open'));
 navBtns[0].onclick();
 await settle();
-ok('切页保留桌面折叠偏好', document.body.classList.contains('sess-collapsed'));
+ok('切页保留桌面展开偏好', !document.body.classList.contains('sess-collapsed'));
 uiApp();
 await settle();
-ok('重新启动从 localStorage 恢复折叠偏好', document.body.classList.contains('sess-collapsed'));
+ok('重新启动从 localStorage 恢复偏好', !document.body.classList.contains('sess-collapsed') && storage.get('agent-sessions-collapsed') === '0');
+pick('#sessRail').onclick();
+ok('桌面 railfoot 重新折叠并持久化', document.body.classList.contains('sess-collapsed') && storage.get('agent-sessions-collapsed') === '1' && pick('#sesscol').inert);
 drawerMedia.matches = true;
 drawerMedia.onchange();
-pick('#sessBtn').onclick();
-ok('移动端可打开会话抽屉、不受桌面折叠影响', document.body.classList.contains('sess-open') && !pick('#sesscol').inert && storage.get('agent-sessions-collapsed') === '1');
+ok('移动端会话列并入导航抽屉', pick('#sesscol').parentNode === pick('.rail'));
+pick('#menuBtn').onclick();
+ok('汉堡统一展开导航与会话列', document.body.classList.contains('nav-open') && !pick('.rail').inert && !pick('#sesscol').inert);
 pick('#sesslist').querySelectorAll('.sessitem')[0].onclick({ target: {} });
 await settle();
-ok('选择会话自动关闭移动抽屉', !document.body.classList.contains('sess-open'));
-pick('#sessBtn').onclick();
-pick('#collapseSess').onclick();
-ok('移动抽屉关闭按钮不更改桌面偏好', !document.body.classList.contains('sess-open') && storage.get('agent-sessions-collapsed') === '1');
-pick('#sessBtn').onclick();
+ok('选择会话自动关闭抽屉', !document.body.classList.contains('nav-open') && pick('.rail').inert);
 pick('#menuBtn').onclick();
-ok('打开导航关闭会话抽屉', document.body.classList.contains('nav-open') && !document.body.classList.contains('sess-open'));
-pick('#sessBtn').onclick();
-ok('打开会话关闭导航抽屉', document.body.classList.contains('sess-open') && !document.body.classList.contains('nav-open'));
-pick('#scrim').onclick();
-ok('遮罩关闭两种抽屉', !document.body.classList.contains('nav-open') && !document.body.classList.contains('sess-open'));
-pick('#sessBtn').onclick();
+pick('#collapseSess').onclick();
+ok('会话列头部按钮关闭整个抽屉', !document.body.classList.contains('nav-open'));
+pick('#menuBtn').onclick();
 events.keydown({ key: 'Escape' });
-ok('Escape 关闭抽屉', !document.body.classList.contains('sess-open'));
-pick('#sessBtn').onclick();
+ok('Escape 关闭抽屉', !document.body.classList.contains('nav-open'));
+pick('#menuBtn').onclick();
+pick('#scrim').onclick();
+ok('遮罩关闭抽屉', !document.body.classList.contains('nav-open'));
 navBtns[1].onclick();
-ok('切标签重置抽屉并隐藏会话列', !document.body.classList.contains('sess-open') && !document.body.classList.contains('nav-open') && pick('#sesscol').hidden);
+ok('切标签隐藏会话列', pick('#sesscol').hidden);
 navBtns[0].onclick();
 await settle();
-pick('#sessBtn').onclick();
+ok('回到会话页恢复会话列', !pick('#sesscol').hidden && pick('#sesscol').parentNode === pick('.rail'));
 drawerMedia.matches = false;
 drawerMedia.onchange();
-ok('跨断点关闭抽屉、保留桌面折叠', !document.body.classList.contains('sess-open') && document.body.classList.contains('sess-collapsed'));
-pick('#sessBtn').onclick();
-ok('桌面顶栏重新展开并持久化', !document.body.classList.contains('sess-collapsed') && storage.get('agent-sessions-collapsed') === '0');
+ok('跨断点移回 shell、保留桌面折叠', pick('#sesscol').parentNode === pick('.shell') && document.body.classList.contains('sess-collapsed'));
+
+console.log('\n[5b] 会话重命名（行内编辑）');
+const renItem = pick('#sesslist').querySelectorAll('.sessitem')[0];
+const renBtn = renItem.querySelector('[data-ren]');
+renBtn.onclick();
+ok('铅笔进入行内编辑态', renItem.classList.contains('renaming') && Boolean(renItem.children.find((c) => c.tagName === 'INPUT')));
+const renInput = renItem.children.find((c) => c.tagName === 'INPUT');
+ok('编辑框预填原标题', renInput.value === '测试会话');
+renInput.value = '改名的会话';
+await renInput.onkeydown({ key: 'Enter', preventDefault() {} });
+await settle();
+ok('Enter 提交走 PATCH', writes.some((w) => w.url.endsWith('/api/sessions/s1') && w.method === 'PATCH'));
+ok('列表标题实时更新并退出编辑态', pick('#sesslist').innerHTML.includes('改名的会话') && !renItem.classList.contains('renaming'));
+renBtn.onclick();
+renItem.children.find((c) => c.tagName === 'INPUT').value = '';
+await renItem.children.find((c) => c.tagName === 'INPUT').onblur();
+ok('空标题取消编辑不发请求', !renItem.classList.contains('renaming') && !writes.some((w) => w.url.endsWith('/api/sessions/s1') && w.method === 'PATCH' && w.body && JSON.parse(w.body).title === ''));
+renBtn.onclick();
+const escInput = renItem.children.find((c) => c.tagName === 'INPUT');
+escInput.value = '草稿标题';
+await escInput.onkeydown({ key: 'Escape', preventDefault() {} });
+ok('Escape 取消不落库', !renItem.classList.contains('renaming') && pick('#sesslist').innerHTML.includes('改名的会话'));
 
 console.log('\n[6] 延迟响应 / 已断开 WS 不写旧 DOM');
 holdHistory = deferred();

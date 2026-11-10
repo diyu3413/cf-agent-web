@@ -127,7 +127,10 @@ export function uiApp() {
   function focusBack(el) {
     if (el && el.isConnected && !el.disabled && !el.closest('[inert],[hidden]')) el.focus();
     else {
-      var fallback = S.tab === 'chat' ? $('#sessBtn') : $('.navitem[aria-selected="true"]');
+      // 桌面顶栏会话按钮已隐藏，焦点回退走左下角 railfoot；移动端仍回顶栏 sessBtn
+      var fallback = S.tab === 'chat'
+        ? ($(mobileDrawers && mobileDrawers.matches ? '#sessBtn' : '#sessRail') || $('#sessBtn'))
+        : $('.navitem[aria-selected="true"]');
       if (fallback) fallback.focus();
     }
   }
@@ -280,46 +283,60 @@ export function uiApp() {
   // ---------- 抽屉 / 桌面会话列 ----------
 
   var mobileDrawers = window.matchMedia && window.matchMedia('(max-width: 840px)');
-  try { S.sessCollapsed = localStorage.getItem('agent-sessions-collapsed') === '1'; } catch (e) { /* 隐身模式 */ }
+  // 会话列默认折叠；只有用户明确存过 '0'（手动展开过）才尊重旧选择
+  try { S.sessCollapsed = localStorage.getItem('agent-sessions-collapsed') !== '0'; } catch (e) { /* 隐身模式 */ }
 
   function setDrawer(name) {
     document.body.classList.toggle('nav-open', name === 'nav');
-    document.body.classList.toggle('sess-open', name === 'sessions' && S.tab === 'chat');
     syncDrawers();
+  }
+
+  // DOM 桩（test/ui.mjs）没有 insertBefore，走 appendChild 兜底；两边都会自动从原父迁移。
+  function reparent(el, parent, before) {
+    if (!el || !parent || el.parentNode === parent) return;
+    if (parent.insertBefore) parent.insertBefore(el, before); else parent.appendChild(el);
   }
 
   function syncDrawers() {
     var mobile = mobileDrawers && mobileDrawers.matches;
     var navOpen = document.body.classList.contains('nav-open');
-    var sessOpen = document.body.classList.contains('sess-open');
     document.body.classList.toggle('sess-collapsed', S.sessCollapsed);
     var rail = $('.rail');
     var col = $('#sesscol');
+    // 移动端会话列并入导航抽屉（drawerhead 与导航项之间），随汉堡统一开关；桌面移回 shell 原位。
+    if (mobile) {
+      var head = rail && rail.querySelector('.drawerhead');
+      reparent(col, rail, head && head.nextSibling);
+    } else {
+      reparent(col, $('.shell'), $('main'));
+    }
     if (rail) rail.inert = Boolean(mobile && !navOpen);
     if (col) {
       col.hidden = S.tab !== 'chat';
-      col.inert = S.tab !== 'chat' || (mobile ? !sessOpen : S.sessCollapsed);
+      // 移动端 rail 关闭时 rail.inert 已罩住整个子树（含会话列），无需单独置 inert。
+      col.inert = S.tab !== 'chat' || (!mobile && S.sessCollapsed);
     }
     var menu = $('#menuBtn');
     if (menu) menu.setAttribute('aria-expanded', String(Boolean(mobile && navOpen)));
-    var btn = $('#sessBtn');
-    var expanded = mobile ? sessOpen : !S.sessCollapsed;
-    if (btn) {
-      btn.setAttribute('aria-expanded', String(S.tab === 'chat' && expanded));
-      btn.setAttribute('aria-label', expanded ? '收起会话列表' : '展开会话列表');
-      btn.title = expanded ? '收起会话列表' : '展开会话列表';
+    var foot = $('#sessRail');
+    if (foot) {
+      var expanded = !S.sessCollapsed;
+      var label = expanded ? '收起会话列表' : '展开会话列表';
+      foot.setAttribute('aria-expanded', String(S.tab === 'chat' && expanded));
+      foot.setAttribute('aria-label', label);
+      foot.title = label;
     }
     var collapse = $('#collapseSess');
     if (collapse) {
-      collapse.setAttribute('aria-label', mobile ? '关闭会话列表' : '收起会话列表');
-      collapse.title = mobile ? '关闭会话列表' : '收起会话列表';
+      collapse.setAttribute('aria-label', mobile ? '关闭菜单' : '收起会话列表');
+      collapse.title = mobile ? '关闭菜单' : '收起会话列表';
     }
   }
 
   function toggleSessions() {
     if (S.tab !== 'chat') return;
     if (mobileDrawers && mobileDrawers.matches) {
-      setDrawer(document.body.classList.contains('sess-open') ? '' : 'sessions');
+      setDrawer(''); // 移动端会话列随导航抽屉开关，这里只剩收起动作（顶栏 sessBtn 已退役）
     } else {
       S.sessCollapsed = !S.sessCollapsed;
       try { localStorage.setItem('agent-sessions-collapsed', S.sessCollapsed ? '1' : '0'); } catch (e) { /* 隐身模式 */ }
@@ -327,6 +344,9 @@ export function uiApp() {
     }
   }
   if (mobileDrawers && mobileDrawers.addEventListener) mobileDrawers.addEventListener('change', function () { setDrawer(''); });
+  // 兜底：部分环境（内嵌视口模拟等）不派发 matchMedia change，resize 时重跑同步；
+  // reparent 幂等，重复调用无害。跨断点时顺带关掉抽屉。
+  if (window.addEventListener) window.addEventListener('resize', function () { setDrawer(''); });
   document.addEventListener('keydown', function (e) {
     if (e.key === 'Escape' && !activeDialog) setDrawer('');
   });
@@ -395,6 +415,9 @@ export function uiApp() {
       TABS.map(function (t) {
         return '<button class="navitem" data-tab="' + t.id + '"><span class="pill">' + svg(t.icon) + '</span><span class="rl">' + t.label + '</span></button>';
       }).join('') +
+      // 桌面端会话列表的展开/收起入口：rail 底部（页面左下角），顶栏 sessBtn 只留给移动端
+      '<div class="railfoot"><button class="navitem" id="sessRail" aria-controls="sesscol" aria-expanded="false">' +
+      '<span class="pill">' + svg('list') + '</span><span class="rl">会话列表</span></button></div>' +
       '</nav>' +
       '<aside class="sesscol" id="sesscol" hidden>' +
       '<div class="sesshead"><span class="t">会话</span>' +
@@ -420,7 +443,9 @@ export function uiApp() {
     };
     $('#menuBtn').onclick = function () { setDrawer(document.body.classList.contains('nav-open') ? '' : 'nav'); };
     $('#sessBtn').onclick = toggleSessions;
+    $('#sessRail').onclick = toggleSessions;
     $('#collapseSess').onclick = toggleSessions;
+    syncDrawers();
     $('#scrim').onclick = function () { setDrawer(''); };
     $('#newSess').onclick = async function () {
       var btn = this, epoch = viewSeq;
@@ -553,6 +578,53 @@ export function uiApp() {
     }
   }
 
+  // 行内重命名：条目切入 editing 态（标题行变输入框），Enter/失焦提交、Escape 取消。
+  // input 挂在 sessitem 上而不是替换 .t，编辑态靠 class 切换显示——测试 DOM 桩没有 replaceWith。
+  function startRename(el, s) {
+    if (el._renaming) return;
+    el._renaming = true;
+    var input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'ren-input';
+    input.value = s.title || '新会话';
+    input.maxLength = 60;
+    input.setAttribute('aria-label', '会话名称');
+    el.appendChild(input);
+    el.classList.add('renaming');
+    input.focus();
+    var committed = false;
+    var finish = function () {
+      el._renaming = false;
+      el.classList.remove('renaming');
+      if (input.remove) input.remove();
+    };
+    var commit = function () {
+      if (committed) return; // Enter 提交后随之而来的 blur 不再走第二遍
+      committed = true;
+      var val = input.value.trim().slice(0, 60);
+      if (!val || val === (s.title || '')) { finish(); return; }
+      var epoch = viewSeq;
+      input.disabled = true;
+      api('sessions/' + s.id, { title: val }, 'PATCH').then(function () {
+        if (epoch !== viewSeq) return;
+        var item = null;
+        for (var i = 0; i < S.sessions.length; i++) if (S.sessions[i].id === s.id) item = S.sessions[i];
+        if (item) { item.title = val; item.updated_at = Date.now(); }
+        paintSessions(); // 按 id 复用节点，只刷标题文本，不动其他条目的焦点
+        finish();
+        toast('已重命名');
+      }).catch(function (err) {
+        finish();
+        if (epoch === viewSeq) toast(err.message);
+      });
+    };
+    input.onkeydown = function (e) {
+      if (e.key === 'Enter') { e.preventDefault(); commit(); }
+      else if (e.key === 'Escape') finish();
+    };
+    input.onblur = commit;
+  }
+
   function paintSessions() {
     var list = $('#sesslist');
     if (!list) return;
@@ -586,6 +658,7 @@ export function uiApp() {
         el.className = 'sessitem';
         el.dataset.id = s.id;
         el.innerHTML = '<button class="sess-select"><span class="t"></span><span class="body-s muted sess-time"></span></button>' +
+          '<button class="icon ren" data-ren="' + esc(s.id) + '" aria-label="重命名会话">' + svg('edit') + '</button>' +
           '<button class="icon del" data-del="' + esc(s.id) + '" aria-label="删除会话">' + svg('trash') + '</button>';
         var select = $('.sess-select', el);
         select.onclick = function () { setDrawer(''); openSession(s.id); };
@@ -593,6 +666,11 @@ export function uiApp() {
         el.onclick = function (e) {
           if (e.target && e.target.closest && e.target.closest('button')) return;
           select.onclick();
+        };
+        var ren = $('[data-ren]', el);
+        ren.onclick = function (e) {
+          if (e && e.stopPropagation) e.stopPropagation(); // DOM 桩的 click() 不带事件对象
+          startRename(el, s);
         };
         var del = $('[data-del]', el);
         del.onclick = async function (e) {

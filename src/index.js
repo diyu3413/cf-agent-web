@@ -165,6 +165,16 @@ async function route(request, env, ctx, opts = {}) {
     const sub = m[2] || '';
     const stub = env.SESSIONS.get(env.SESSIONS.idFromName(sessionId));
 
+    if (method === 'PATCH' && !sub) {
+      // 重命名会话：空标题视为无效请求，不动库里那一行。
+      // 手动命名过的会话 title 非空，DO 首条消息的自动命名（CASE WHEN title = ''）不会覆盖它。
+      const body = await readJsonBody(request).catch(() => ({}));
+      const title = String(body.title || '').trim().slice(0, 60);
+      if (!title) return apiError(400, '会话名不能为空。');
+      await env.DB.prepare('UPDATE sessions SET title = ?1, updated_at = ?2 WHERE id = ?3')
+        .bind(title, Date.now(), sessionId).run();
+      return jsonResponse({ ok: true, title });
+    }
     if (method === 'DELETE' && !sub) {
       await stub.fetch(new Request('https://do/delete', { method: 'POST' })).catch(() => {});
       await env.DB.prepare('DELETE FROM sessions WHERE id = ?1').bind(sessionId).run();

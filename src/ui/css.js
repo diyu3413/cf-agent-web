@@ -67,7 +67,9 @@ svg.i.sm{width:18px;height:18px;stroke-width:2}
 .topbar .brand b{font-weight:500;white-space:nowrap}
 .topbar .brand .mark{color:var(--md-sys-color-primary);display:flex}
 .topbar .spacer{flex:1;min-width:8px}
-.menubtn{display:none}
+/* 汉堡按钮仅在 >840px 隐藏（桌面左栏常驻）；≤840px 抽屉模式下重新显示。
+   必须带上 button.icon 提高特异性：后面 button.icon{display:grid} 的 (0,1,1) 会压过单个类名的 (0,1,0)。 */
+button.icon.menubtn{display:none}
 
 /* ---------- 骨架 ---------- */
 .shell{display:flex;min-height:calc(100vh - 64px)}
@@ -106,6 +108,8 @@ svg.i.sm{width:18px;height:18px;stroke-width:2}
   border-top:1px solid var(--md-sys-color-outline-variant);
 }
 .railfoot .rl{font-size:10.5px;letter-spacing:0}
+/* 会话列表入口与顶栏按钮同语义：只在 Chat 视图出现（文件/设置页 rail 底部不放死按钮） */
+body:not(.view-chat) .railfoot{display:none}
 .themestate{font-size:10px;line-height:14px;color:var(--md-sys-color-on-surface-variant);white-space:nowrap}
 
 main{flex:1;min-width:0;padding:8px 24px 96px}
@@ -360,8 +364,8 @@ pre.code{
 
 /* ---------- <=840px：侧栏变模态抽屉 ---------- */
 @media(max-width:840px){
-  .menubtn{display:grid}
-  body.nav-open .scrim,body.sess-open .scrim{opacity:1;visibility:visible}
+  button.icon.menubtn{display:grid}
+  body.nav-open .scrim{opacity:1;visibility:visible}
   .rail{
     position:fixed;left:0;top:0;bottom:0;z-index:40;
     width:min(300px,84vw);flex-basis:auto;
@@ -394,9 +398,8 @@ pre.code{
   .navitem .pill::after{display:none}
   .navitem[aria-selected=true]{background:var(--md-sys-color-secondary-container);color:var(--md-sys-color-on-secondary-container)}
   .navitem .rl{font-size:14px;line-height:20px}
-  .railfoot{width:100%;margin-top:auto;padding-top:8px;align-items:stretch}
-  .railfoot .navitem{justify-content:flex-start}
-  .railfoot .rl{font-size:14px}
+  /* 移动端会话列已并入导航抽屉（顶栏 sessBtn 退役），左下角 railfoot 只在桌面出现 */
+  .railfoot{display:none}
   .themestate{font-size:12px;margin-left:auto}
   main{padding:8px 16px 96px}
 }
@@ -457,7 +460,10 @@ pre.code{
   border-right:1px solid var(--md-sys-color-outline-variant);background:var(--md-sys-color-surface-container-low);
 }
 @media(min-width:841px){
-  body.sess-collapsed .sesscol{display:none}
+  /* 折叠动画用负 margin 整列推出而不是 display:none：列宽不变、内部零挤压，
+     main 的推挤跟随形成展开/收起的过渡；向左溢出不产生滚动条。 */
+  .sesscol{transition:margin-left var(--dur-m) var(--ease-std),opacity var(--dur-m) var(--ease-std)}
+  body.sess-collapsed .sesscol{margin-left:-272px;opacity:0;pointer-events:none}
 }
 .sesscol .sesshead{display:flex;align-items:center;gap:4px;padding:12px 8px 8px}
 .sesscol .sesshead .t{flex:1;font-size:13px;font-weight:500;letter-spacing:.3px;color:var(--md-sys-color-on-surface-variant)}
@@ -474,9 +480,18 @@ pre.code{
 .sess-select:hover::after{opacity:var(--md-state-hover)}
 .sess-select:focus-visible::after,.sess-select:active::after{opacity:var(--md-state-press)}
 .sessitem .t{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13.5px}
-.sessitem .del{visibility:hidden}
-.sessitem:hover .del,.sessitem:focus-within .del,.sessitem[aria-current=true] .del{visibility:visible}
-@media(hover:none){.sessitem .del{visibility:visible}}
+.sessitem .del,.sessitem .ren{visibility:hidden}
+.sessitem:hover .del,.sessitem:focus-within .del,.sessitem[aria-current=true] .del,
+.sessitem:hover .ren,.sessitem:focus-within .ren,.sessitem[aria-current=true] .ren{visibility:visible}
+@media(hover:none){.sessitem .del,.sessitem .ren{visibility:visible}}
+/* 行内重命名：编辑态隐藏选择/操作按钮，输入框占满整行 */
+.sessitem .ren-input{display:none}
+.sessitem.renaming .sess-select,.sessitem.renaming button.icon{display:none}
+.sessitem.renaming .ren-input{
+  display:block;flex:1;min-width:0;margin:6px 4px;font:inherit;font-size:13.5px;
+  color:var(--md-sys-color-on-surface);background:var(--md-sys-color-surface-container-highest);
+  border:0;border-radius:var(--md-shape-m);padding:10px 12px;outline:none;
+}
 .sessitem[aria-current=true]{background:var(--md-sys-color-secondary-container);color:var(--md-sys-color-on-secondary-container)}
 .sessempty{padding:24px 16px;color:var(--md-sys-color-on-surface-variant);font-size:13px;text-align:center}
 .sesserror{padding:12px;color:var(--md-sys-color-on-surface-variant);font-size:12px;border:1px solid var(--md-sys-color-outline-variant);border-radius:var(--md-shape-m)}
@@ -539,18 +554,16 @@ pre.code{
 .filepreview pre{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;font-size:12.5px;line-height:1.6}
 .hitpath{font-size:12px;font-family:"Roboto Mono",ui-monospace,monospace;color:var(--md-sys-color-on-surface-variant)}
 
-/* ---------- <=840px：会话列表变模态抽屉 ---------- */
+/* ---------- <=840px：会话列并入导航抽屉（drawerhead 与导航项之间），随汉堡统一开关 ---------- */
 @media(max-width:840px){
   .chatwrap{height:auto;min-height:calc(100vh - 64px)}
   .sesscol{
-    position:fixed;left:0;top:0;bottom:0;z-index:40;width:min(300px,84vw);flex-basis:auto;height:auto;
-    border-right:0;border-radius:0 var(--md-shape-l) var(--md-shape-l) 0;box-shadow:var(--md-elev-3);
-    transform:translateX(-104%);visibility:hidden;
-    transition:transform var(--dur-l) var(--ease-emph),visibility var(--dur-l) var(--ease-emph);
-    overscroll-behavior:contain;
+    position:static;width:100%;flex:0 1 auto;min-height:0;height:auto;
+    border:0;border-radius:var(--md-shape-l);background:var(--md-sys-color-surface-container-low);
+    transform:none;visibility:visible;overflow:hidden;
   }
-  body.sess-open .sesscol{transform:none;visibility:visible}
-  body.sess-open{overflow:hidden}
+  /* 列表过长时内部自滚，别把下方导航项挤出屏幕 */
+  .sesslist{max-height:34vh}
   .msgs{padding:16px 14px 8px}
   .composer{padding:8px 14px 12px}
   .msg.user{max-width:88%}
@@ -583,9 +596,8 @@ pre.code{
 a.btn.small{min-height:32px;height:32px;padding:0 14px;font-size:13px;text-decoration:none;justify-content:center}
 
 /* ---------- 会话列表入口 ---------- */
-/* 桌面可折叠，顶栏按钮始终可重新展开；移动端只控制抽屉，不改桌面偏好。 */
+/* 顶栏列表按钮退役：桌面入口在左下角 railfoot，移动端会话列并入导航抽屉随汉堡开关。 */
 .topbar .sessbtn{display:none}
-body.view-chat .topbar .sessbtn{display:grid}
 
 /* ---------- assistant 消息内的 markdown ---------- */
 .msg.assistant h1,.msg.assistant h2,.msg.assistant h3,.msg.assistant h4{margin:14px 0 6px;line-height:1.35}
